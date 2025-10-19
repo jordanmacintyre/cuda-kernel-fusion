@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuda_ops"
+version = "0.1.0"
+description = "Simple CUDA kernel fusion example"
+authors = [{name = "Jordan MacIntyre"}]
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[tool.pytest.ini_options]
+# Test discovery patterns
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+# Test directory
+testpaths = ["tests"]
+
+# Output options
+addopts = [
+    "-v",                    # Verbose output
+    "--tb=short",           # Shorter traceback format
+    "--strict-markers",     # Raise error on unknown markers
+    "--color=yes",          # Colored output
+]
+
+# Markers for test categorization
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "cuda: marks tests that require CUDA",
+    "numerical: marks numerical accuracy tests",
+]
+
+# Warnings
+filterwarnings = [
+    "error::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
+# Minimum Python version
+minversion = "7.0"
