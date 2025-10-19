@@ -8,7 +8,7 @@ Run with: pytest tests/
 import pytest
 import torch
 
-from cuda_ops import add_mul_exp
+from ops.cuda import add_mul_exp
 
 
 class TestAddMulExp:

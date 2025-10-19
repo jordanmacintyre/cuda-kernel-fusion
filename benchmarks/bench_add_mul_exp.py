@@ -32,27 +32,15 @@ print("\n[SETUP] Loading CUDA extension...")
 sys.stdout.flush()
 
 try:
-    from cuda_ops import add_mul_exp
+    from ops.cuda import add_mul_exp_cuda
+    from ops.torch import add_mul_exp_pytorch
 
     print("✓ CUDA extension loaded")
 except ImportError as e:
-    print(f"✗ Failed to import cuda_ops: {e}")
+    print(f"✗ Failed to import ops: {e}")
     print("\nPlease install the package first:")
     print("  pip install --no-build-isolation -e .")
     sys.exit(1)
-
-
-def pytorch_unfused(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """Unfused PyTorch - 3 separate kernel launches."""
-    a = x + y  # Kernel 1
-    b = a * 2  # Kernel 2
-    c = torch.exp(b)  # Kernel 3
-    return c
-
-
-def cuda_fused(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """Fused CUDA - single kernel launch."""
-    return add_mul_exp(x, y)
 
 
 def main():
@@ -85,7 +73,7 @@ def main():
     print("\n[SETUP] Testing CUDA kernel...")
     sys.stdout.flush()
     try:
-        _ = add_mul_exp(x[:100], y[:100])
+        _ = add_mul_exp_cuda(x[:100], y[:100])
         print("✓ CUDA kernel working")
     except Exception as e:
         print(f"✗ CUDA kernel failed: {e}")
@@ -93,11 +81,11 @@ def main():
 
     # Benchmark both implementations
     baseline_result, optimized_result = compare_implementations(
-        baseline_func=pytorch_unfused,
-        optimized_func=cuda_fused,
+        baseline_func=add_mul_exp_pytorch,
+        optimized_func=add_mul_exp_cuda,
         args=(x, y),
-        baseline_name="PyTorch (unfused)",
-        optimized_name="CUDA (fused)",
+        baseline_name="PyTorch",
+        optimized_name="CUDA",
         warmup=10,
         iterations=100,
         verbose=True,
@@ -125,8 +113,8 @@ def main():
     # PyTorch profiler for kernel-level details
     profile_with_pytorch_profiler(
         [
-            (pytorch_unfused, "PyTorch (unfused)", (x, y)),
-            (cuda_fused, "CUDA (fused)", (x, y)),
+            (add_mul_exp_pytorch, "PyTorch", (x, y)),
+            (add_mul_exp_cuda, "CUDA", (x, y)),
         ],
         iterations=10,
     )

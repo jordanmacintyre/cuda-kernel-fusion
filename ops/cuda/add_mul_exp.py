@@ -3,7 +3,7 @@ Python interface to CUDA kernels.
 
 This file:
 1. Compiles the CUDA code (JIT = Just-In-Time compilation)
-2. Provides a Python function that calls the CUDA kernel
+2. Provides Python functions that call the CUDA kernel
 """
 
 import os
@@ -30,11 +30,11 @@ _C = load(
 )
 
 
-def add_mul_exp(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+def add_mul_exp_cuda(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """
-    Fused operation: c = exp((x + y) * 2)
+    CUDA implementation: c = exp((x + y) * 2)
 
-    This is a Python function that calls our CUDA kernel.
+    Fused CUDA kernel that performs the operation in a single kernel launch.
 
     Args:
         x: Input tensor (must be on CUDA, float32)
@@ -44,7 +44,7 @@ def add_mul_exp(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         Output tensor: exp((x + y) * 2)
 
     Raises:
-        ValueError: If inputs are not CUDA tensors
+        ValueError: If inputs are not CUDA tensors or wrong dtype
         RuntimeError: If CUDA kernel fails
     """
     # Input validation
@@ -58,5 +58,30 @@ def add_mul_exp(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         raise ValueError("Only float32 tensors supported")
 
     # Call the C++ wrapper, which launches the CUDA kernel
-    # _C.fused_add_mul_exp is defined in fusion_kernel.cu via PYBIND11_MODULE
     return _C.add_mul_exp(x, y)
+
+
+def add_mul_exp(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """
+    Fused operation: c = exp((x + y) * 2)
+
+    Main API that dispatches to the CUDA implementation.
+    This is the recommended function to use.
+
+    Args:
+        x: Input tensor (must be on CUDA, float32)
+        y: Input tensor (must be on CUDA, float32, same shape as x)
+
+    Returns:
+        Output tensor: exp((x + y) * 2)
+
+    Raises:
+        ValueError: If inputs are not CUDA tensors or wrong dtype
+        RuntimeError: If CUDA kernel fails
+
+    Example:
+        >>> x = torch.randn(1000, device='cuda')
+        >>> y = torch.randn(1000, device='cuda')
+        >>> result = add_mul_exp(x, y)
+    """
+    return add_mul_exp_cuda(x, y)

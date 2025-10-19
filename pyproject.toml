@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cuda_ops"
+name = "ops"
 version = "0.1.0"
-description = "Simple CUDA kernel fusion example"
+description = "Multi-backend kernel fusion examples (CUDA, PyTorch, Triton)"
 authors = [{name = "Jordan MacIntyre"}]
 requires-python = ">=3.12"
 dependencies = [

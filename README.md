@@ -46,14 +46,27 @@ python benchmarks/bench_add_mul_exp.py
 
 ```python
 import torch
-from cuda_ops import add_mul_exp
+from ops.cuda import add_mul_exp, add_mul_exp_cuda
+from ops.torch import add_mul_exp_pytorch
 
 x = torch.randn(1_000_000, device='cuda')
 y = torch.randn(1_000_000, device='cuda')
 
-# Fused operation: exp((x + y) * 2)
-result = add_mul_exp(x, y)  # 2.3x faster than PyTorch!
+# Main API (dispatches to CUDA)
+result = add_mul_exp(x, y)
+
+# Or explicitly use CUDA implementation
+result_cuda = add_mul_exp_cuda(x, y)
+
+# PyTorch baseline for comparison
+result_pytorch = add_mul_exp_pytorch(x, y)
 ```
+
+**Naming Convention:**
+- `operation_cuda()` - CUDA implementation (fused)
+- `operation_pytorch()` - PyTorch baseline (unfused)
+- `operation_triton()` - Triton implementation (future)
+- `operation()` - Main API (dispatches to best available)
 
 ## Performance
 
@@ -81,9 +94,14 @@ Intermediate values `a` and `b` stay in registers → **no memory round-trips**.
 
 ```
 cuda-kernel-fusion/
-├── cuda_ops/                      # CUDA operations package
-│   ├── add_mul_exp.py            # Python wrapper with validation
-│   └── csrc/add_mul_exp.cu       # CUDA kernel implementation
+├── ops/                           # Multi-backend operations
+│   ├── cuda/                     # CUDA implementations
+│   │   ├── add_mul_exp.py       # Python wrapper + add_mul_exp_cuda()
+│   │   └── csrc/                # CUDA source files
+│   │       └── add_mul_exp.cu   # CUDA kernel
+│   ├── torch/                    # PyTorch reference implementations
+│   │   └── add_mul_exp.py       # add_mul_exp_pytorch()
+│   └── triton/                   # (future) Triton implementations
 ├── tests/                         # 19 tests (correctness, accuracy, edge cases)
 │   └── test_add_mul_exp.py
 ├── benchmarks/                    # Performance analysis
@@ -132,7 +150,7 @@ See `benchmarks/README.md` for details on the benchmarking framework.
 
 ### 1. Create CUDA Kernel
 
-`cuda_ops/csrc/your_op.cu`:
+`ops/cuda/csrc/your_op.cu`:
 ```cuda
 #include <torch/extension.h>
 
@@ -164,19 +182,36 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 }
 ```
 
-### 2. Create Python Wrapper
+### 2. Create Python Wrapper and Baseline
 
-`cuda_ops/your_op.py`:
+`ops/cuda/your_op.py`:
 ```python
 import torch
-from cuda_ops._C import your_op_cuda
+from torch.utils.cpp_extension import load
 
-def your_op(x: torch.Tensor, y: torch.Tensor) -> torch::Tensor:
+# Compile CUDA extension
+_C = load(name="your_op_cuda", sources=["csrc/your_op.cu"], ...)
+
+def your_op_cuda(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """CUDA implementation."""
     if not x.is_cuda or not y.is_cuda:
         raise ValueError("Inputs must be CUDA tensors")
-    if x.shape != y.shape:
-        raise ValueError(f"Shape mismatch: {x.shape} vs {y.shape}")
+    return _C.your_op(x, y)
+
+def your_op(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Main API - dispatches to CUDA."""
     return your_op_cuda(x, y)
+```
+
+`ops/torch/your_op.py`:
+```python
+import torch
+
+def your_op_pytorch(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """PyTorch baseline implementation."""
+    # Your unfused PyTorch code here
+    temp = x + y
+    return temp * 2
 ```
 
 ### 3. Add Tests and Benchmarks

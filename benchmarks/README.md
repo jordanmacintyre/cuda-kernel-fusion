@@ -50,7 +50,7 @@ def pytorch_baseline(x, y):
 
 def cuda_optimized(x, y):
     """Your CUDA kernel."""
-    from cuda_ops import your_op
+    from ops.cuda import your_op
     return your_op(x, y)
 ```
 

@@ -30,35 +30,20 @@ print("\n[SETUP] Loading CUDA extension...")
 sys.stdout.flush()
 
 try:
-    # TODO: Import your custom operation
-    # from cuda_ops import your_operation
-    raise NotImplementedError("Replace this with your import")
+    # TODO: Import your custom operation using _cuda and _pytorch suffixes
+    # from ops.cuda import your_operation_cuda
+    # from ops.torch import your_operation_pytorch
+    raise NotImplementedError("Replace this with your imports")
 except ImportError as e:
-    print(f"✗ Failed to import cuda_ops: {e}")
+    print(f"✗ Failed to import ops: {e}")
     print("\nPlease install the package first:")
     print("  pip install --no-build-isolation -e .")
     sys.exit(1)
 
-
-def pytorch_baseline(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """
-    PyTorch baseline implementation.
-
-    TODO: Implement your operation using PyTorch.
-    This should match what your CUDA kernel does.
-    """
-    # Example: return torch.exp((x + y) * 2)
-    raise NotImplementedError("Implement PyTorch baseline")
-
-
-def cuda_optimized(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """
-    Custom CUDA implementation.
-
-    TODO: Call your custom CUDA kernel.
-    """
-    # Example: return your_operation(x, y)
-    raise NotImplementedError("Implement CUDA version")
+# NOTE: Naming convention:
+# - your_operation_cuda(): CUDA implementation (in ops/cuda/your_op.py)
+# - your_operation_pytorch(): PyTorch baseline (in ops/torch/your_op.py)
+# This keeps code organized and follows industry standards
 
 
 def main():
@@ -88,7 +73,9 @@ def main():
     # Quick sanity check
     print("\n[SETUP] Testing CUDA kernel...")
     try:
-        _ = cuda_optimized(x[:100], y[:100])
+        # TODO: Replace with your CUDA operation
+        # _ = your_operation_cuda(x[:100], y[:100])
+        raise NotImplementedError("Test your CUDA kernel here")
         print("✓ CUDA kernel working")
     except Exception as e:
         print(f"✗ CUDA kernel failed: {e}")
@@ -96,8 +83,8 @@ def main():
 
     # Benchmark both implementations
     baseline_result, optimized_result = compare_implementations(
-        baseline_func=pytorch_baseline,
-        optimized_func=cuda_optimized,
+        baseline_func=None,  # TODO: your_operation_pytorch,
+        optimized_func=None,  # TODO: your_operation_cuda,
         args=(x, y),
         baseline_name="PyTorch",
         optimized_name="CUDA",
