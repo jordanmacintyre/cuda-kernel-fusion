@@ -1,36 +1,70 @@
 # Benchmarks
 
-Comprehensive performance and accuracy benchmarks for CUDA kernel fusion operations.
+Comprehensive performance and accuracy analysis framework for CUDA kernel fusion operations. Provides timing statistics, numerical accuracy metrics, memory traffic analysis with **roofline model efficiency**, and profiling for comparing fused CUDA kernels against PyTorch baselines.
 
-## Structure
+## Contents
 
-```
-benchmarks/
-├── utils/                      # Reusable benchmarking utilities
-│   ├── __init__.py
-│   ├── performance.py         # Performance benchmarking functions
-│   └── analysis.py            # Numerical accuracy analysis
-├── bench_add_mul_exp.py       # Benchmark for add_mul_exp kernel
-├── bench_template.py          # Template for new benchmarks
-└── README.md                  # This file
-```
+This directory contains:
+- **Benchmark scripts**: Complete benchmarks for each implemented kernel
+  - [bench_add_mul_exp.py](bench_add_mul_exp.py) - Element-wise fusion benchmark
+  - [bench_quantize_int8.py](bench_quantize_int8.py) - INT8 quantization benchmark
+- **Template**: [bench_template.py](bench_template.py) - Starting point for new benchmarks
+- **Utilities**: Reusable benchmarking framework in [utils/](utils/)
+  - [performance.py](utils/performance.py) - Timing, profiling, memory analysis
+  - [analysis.py](utils/analysis.py) - Numerical accuracy comparison
 
 ## Quick Start
 
-### Run a Benchmark
-
 ```bash
-# Run the add_mul_exp benchmark
+# Run element-wise fusion benchmark
 python benchmarks/bench_add_mul_exp.py
+
+# Run INT8 quantization benchmark
+python benchmarks/bench_quantize_int8.py
 ```
 
-### Expected Output
-
+**Sample output:**
 ```
-PyTorch (unfused):   0.686 ± 0.012 ms
-CUDA (fused):        0.297 ± 0.008 ms
-Speedup:             2.31x
-Max relative error:  8.13e-07 ✓
+======================================================================
+TIMING RESULTS
+======================================================================
+
+PyTorch:
+  Mean:   0.690 ± 0.020 ms
+  Median: 0.687 ms
+  Range:  [0.681, 0.788] ms
+
+CUDA:
+  Mean:   0.297 ± 0.010 ms
+  Median: 0.295 ms
+  Range:  [0.291, 0.361] ms
+
+  Speedup: 2.32x
+
+======================================================================
+MEMORY TRAFFIC ANALYSIS
+======================================================================
+Speedup Analysis:
+  Memory reduction:       2.33x
+  Kernel reduction:       3/1 = 3.00x
+  Actual speedup:         2.32x
+
+Roofline Analysis:
+  Baseline arithmetic intensity:  0.107 FLOPs/byte
+  Baseline bottleneck:            memory
+  Baseline efficiency:            98.0%
+  Optimized arithmetic intensity: 0.250 FLOPs/byte
+  Optimized bottleneck:           memory
+  Optimized efficiency:           97.5%
+
+======================================================================
+NUMERICAL ACCURACY ANALYSIS
+======================================================================
+Relative Differences:
+  Max:    8.861581e-07
+
+Passes torch.allclose():
+  rtol=1e-5: ✓
 ```
 
 ## Creating a New Benchmark
@@ -54,21 +88,44 @@ def cuda_optimized(x, y):
     return your_op(x, y)
 ```
 
-### 3. Update Memory Counts
+### 3. Update Memory Operation Counts
 
-Count the number of tensor reads/writes for accurate bandwidth analysis:
+Count the number of tensor reads/writes for accurate bandwidth analysis. For each PyTorch operation, count how many times tensors are read from or written to global memory:
 
 ```python
+# Basic memory analysis (without roofline)
 memory_stats = analyze_memory_traffic(
     tensor_size=size,
-    baseline_reads=3,   # PyTorch: read x, y, intermediate
-    baseline_writes=2,  # PyTorch: write intermediate, output
-    optimized_reads=2,  # CUDA: read x, y
-    optimized_writes=1, # CUDA: write output
+    baseline_reads=3,   # PyTorch: count all tensor reads across all ops
+    baseline_writes=2,  # PyTorch: count all tensor writes across all ops
+    optimized_reads=2,  # CUDA: read x, y only
+    optimized_writes=1, # CUDA: write output only
     baseline_time_ms=baseline_result.mean_time_ms,
     optimized_time_ms=optimized_result.mean_time_ms,
 )
+
+# Advanced analysis with roofline model (recommended)
+memory_stats = analyze_memory_traffic(
+    tensor_size=size,
+    baseline_reads=3,
+    baseline_writes=2,
+    optimized_reads=2,
+    optimized_writes=1,
+    baseline_time_ms=baseline_result.mean_time_ms,
+    optimized_time_ms=optimized_result.mean_time_ms,
+    # Roofline model parameters (optional but recommended)
+    baseline_flops=size * 3,      # Total FLOPs for baseline
+    optimized_flops=size * 3,     # Total FLOPs for optimized
+    gpu_specs={
+        'peak_bandwidth': 414e9,   # Measured GPU bandwidth (GB/s)
+        'peak_flops': 20.3e12,     # GPU peak FLOPs (FLOPS)
+    }
+)
 ```
+
+**Example:** For `clamp(round(x / scale + zero_point), -128, 127)`:
+- PyTorch: 5 ops → 5 reads + 5 writes = 10 memory operations
+- CUDA: 1 op → 1 read + 1 write = 2 memory operations
 
 ### 4. Run Your Benchmark
 
@@ -143,24 +200,51 @@ stats = analyze_memory_traffic(
 print_memory_analysis(stats)
 ```
 
-Output:
+Output (with roofline model):
 ```
 Memory Traffic Analysis:
   Baseline:
     Memory operations: 7 (4 reads + 3 writes)
     Total traffic:     267.03 MB
-    Bandwidth:         381.25 GB/s
+    Bandwidth:         378.81 GB/s
 
   Optimized:
     Memory operations: 3 (2 reads + 1 writes)
     Total traffic:     114.44 MB
-    Bandwidth:         377.36 GB/s
+    Bandwidth:         399.72 GB/s
 
-  Efficiency:
-    Theoretical speedup: 2.33x
-    Actual speedup:      2.31x
-    Efficiency:          99.1%
+  Speedup Analysis:
+    Memory reduction:       2.33x
+    Kernel reduction:       3/1 = 3.00x
+    Actual speedup:         2.32x
+
+  Roofline Analysis:
+    Baseline arithmetic intensity:  0.107 FLOPs/byte
+    Baseline bottleneck:            memory
+    Baseline efficiency:            98.0%
+    Optimized arithmetic intensity: 0.250 FLOPs/byte
+    Optimized bottleneck:           memory
+    Optimized efficiency:           97.5%
 ```
+
+### GPU Specifications for Roofline
+
+Measure your GPU's actual bandwidth and peak FLOPs:
+
+```python
+from utils import measure_gpu_specs
+
+gpu_specs = measure_gpu_specs(
+    size_mb=1000,      # Test with 1GB of data
+    num_iterations=100,
+    verbose=True
+)
+
+print(f"Peak bandwidth: {gpu_specs['peak_bandwidth']/1e9:.1f} GB/s")
+print(f"Peak FLOPs: {gpu_specs['peak_flops']/1e12:.1f} TFLOPS")
+```
+
+**Note**: This measures **copy bandwidth**, not compute bandwidth. For production analysis, consider using compute-based measurements (FMA operations).
 
 ### PyTorch Profiler
 
@@ -173,43 +257,61 @@ profile_with_pytorch_profiler([
 ], iterations=10)
 ```
 
-## API Reference
+## Utility Functions Reference
 
-### performance.py
+### `utils/performance.py`
 
-**`benchmark_function(func, args, name, warmup=10, iterations=100, verbose=True)`**
-- Benchmark a single function with warmup
-- Returns: `BenchmarkResult` with timing statistics
+| Function | Description | Returns |
+|----------|-------------|---------|
+| `benchmark_function()` | Benchmark single function with warmup | `BenchmarkResult` with timing stats |
+| `compare_implementations()` | Compare baseline vs optimized | Tuple of two `BenchmarkResult`s |
+| `measure_gpu_specs()` | Measure actual GPU bandwidth and estimate peak FLOPs | Dict with `peak_bandwidth`, `peak_flops` |
+| `roofline_efficiency()` | Calculate roofline model efficiency | `(efficiency, bottleneck, cache_benefit)` tuple |
+| `analyze_memory_traffic()` | Calculate bandwidth, efficiency, roofline metrics | Dict with memory analysis |
+| `print_memory_analysis()` | Pretty-print memory stats with roofline | None (prints to stdout) |
+| `profile_with_pytorch_profiler()` | Profile using PyTorch profiler | None (prints profiler output) |
 
-**`compare_implementations(baseline_func, optimized_func, args, ...)`**
-- Compare two implementations
-- Returns: `(baseline_result, optimized_result)`
+### `utils/analysis.py`
 
-**`analyze_memory_traffic(tensor_size, baseline_reads, baseline_writes, ...)`**
-- Calculate memory traffic and bandwidth
-- Returns: Dictionary with detailed analysis
+| Function | Description | Returns |
+|----------|-------------|---------|
+| `analyze_numerical_accuracy()` | Comprehensive accuracy analysis | `AccuracyMetrics` object |
+| `compare_accuracy_quick()` | Quick pass/fail accuracy check | `(passes, max_abs_err, max_rel_err)` |
+| `assert_accuracy()` | Assert accuracy or raise error | None (raises on failure) |
 
-**`print_memory_analysis(analysis)`**
-- Pretty print memory analysis
-- Input: Output from `analyze_memory_traffic()`
+See the source files for detailed parameter documentation.
 
-**`profile_with_pytorch_profiler(funcs_and_names, iterations=10)`**
-- Profile using PyTorch's profiler
-- Input: List of `(function, name, args)` tuples
+## Understanding Performance Metrics
 
-### analysis.py
+### Roofline Model
 
-**`analyze_numerical_accuracy(baseline, optimized, verbose=True)`**
-- Comprehensive accuracy analysis
-- Returns: `AccuracyMetrics` with detailed comparison
+The roofline model determines if your kernel is **compute-bound** or **memory-bound** by comparing arithmetic intensity against the ridge point:
 
-**`compare_accuracy_quick(baseline, optimized, rtol=1e-5, atol=1e-8)`**
-- Quick pass/fail check
-- Returns: `(passes, max_abs_error, max_rel_error)`
+- **Arithmetic Intensity**: FLOPs per byte (FLOPs/byte)
+- **Ridge Point**: `peak_flops / peak_bandwidth` (e.g., ~49 FLOPs/byte for RTX 3070)
+- **Bottleneck**:
+  - If AI < Ridge Point → **memory-bound** (limited by bandwidth)
+  - If AI ≥ Ridge Point → **compute-bound** (limited by FLOPs)
 
-**`assert_accuracy(baseline, optimized, rtol=1e-5, operation_name="Operation")`**
-- Assert accuracy or raise detailed error
-- Useful in test suites
+**Roofline Efficiency** measures how close your kernel is to theoretical peak performance:
+- **100%**: Perfect efficiency, achieving theoretical maximum
+- **90-99%**: Excellent performance
+- **< 90%**: Room for optimization
+
+### Cache Benefit
+
+When a kernel runs **faster than theoretical predictions** based on DRAM bandwidth alone, it indicates **L2 cache benefits**:
+
+- **Cache benefit = 1.0x**: Performance matches DRAM-only theory
+- **Cache benefit > 1.0x**: L2 cache is helping! (GOOD)
+- **Example**: 1.51x cache benefit means the kernel is 51% faster than theory predicts
+
+This happens when:
+- Data fits in L2 cache (6MB on RTX 3070)
+- Good temporal locality (reusing data)
+- Effective spatial locality (coalesced access)
+
+**Why report separately?** Efficiency is capped at 100% (can't exceed theoretical maximum), but cache benefit shows how much faster you are than the simple DRAM-only model.
 
 ## Best Practices
 
@@ -232,24 +334,24 @@ accuracy_metrics = analyze_numerical_accuracy(
 - `rtol=1e-7` for float64
 - Adjust based on your operation's numerical sensitivity
 
-### 3. Count Memory Operations Carefully
+### 3. Understanding Memory Operations
 
-Memory operations include:
-- **Reads**: Every time a tensor is loaded from global memory
-- **Writes**: Every time a tensor is stored to global memory
-- **Don't count**: Register operations, shared memory (for simple kernels)
+Count only **global memory** accesses (reads from/writes to DRAM):
+- **Reads**: Tensor loaded from global memory
+- **Writes**: Tensor stored to global memory
+- **Don't count**: Register operations, L1/L2 cache hits, shared memory
 
-Example for `exp((x + y) * 2)`:
+**Example:** `exp((x + y) * 2)`
 
-**PyTorch (3 kernels):**
-- Kernel 1: read x, y → write a (2 reads, 1 write)
-- Kernel 2: read a → write b (1 read, 1 write)
-- Kernel 3: read b → write c (1 read, 1 write)
-- **Total: 4 reads, 3 writes**
+PyTorch (3 separate kernels):
+1. `a = x + y`: read x, y → write a (2 reads, 1 write)
+2. `b = a * 2`: read a → write b (1 read, 1 write)
+3. `c = exp(b)`: read b → write c (1 read, 1 write)
+- **Total: 4 reads + 3 writes = 7 operations**
 
-**CUDA (1 kernel):**
-- read x, y → write c (2 reads, 1 write)
-- **Total: 2 reads, 1 write**
+CUDA (1 fused kernel):
+- Read x, y → compute in registers → write c
+- **Total: 2 reads + 1 write = 3 operations**
 
 ### 4. Use Sufficient Warmup
 
@@ -286,6 +388,14 @@ Use PyTorch profiler to understand kernel-level behavior:
 - Profile to identify bottlenecks
 - Ensure data is actually on GPU
 
-## Examples
+## Example Benchmarks
 
-See `bench_add_mul_exp.py` for a complete working example.
+- [bench_add_mul_exp.py](bench_add_mul_exp.py) - Element-wise fusion: `exp((x + y) * 2)`
+  - Demonstrates reducing 3 kernels to 1
+  - Shows 2.32x speedup with 98% roofline efficiency
+  - High numerical accuracy (< 1e-6 relative error)
+
+- [bench_quantize_int8.py](bench_quantize_int8.py) - INT8 quantization
+  - Demonstrates reducing 5 kernels to 1
+  - Shows 7.14x speedup with 100% roofline efficiency + 1.51x cache benefit
+  - Exact integer matching (zero error)

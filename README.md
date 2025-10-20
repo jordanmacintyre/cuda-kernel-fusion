@@ -1,6 +1,6 @@
 # CUDA Kernel Fusion
 
-Educational examples demonstrating **CUDA kernel fusion** to optimize GPU performance by reducing memory bandwidth bottlenecks. Achieves **2-3x speedup** over PyTorch by keeping intermediate values in GPU registers.
+Educational repository demonstrating **CUDA kernel fusion** techniques to optimize GPU performance by reducing memory bandwidth bottlenecks. Includes fused kernel implementations achieving **2.3-7.1x speedup** over PyTorch by keeping intermediate values in GPU registers instead of global memory.
 
 ## What is Kernel Fusion?
 
@@ -17,12 +17,12 @@ c = torch.exp(b)   # Kernel 3: read b → write c
 
 ```cuda
 // Fused CUDA - 1 kernel, 3 memory operations
-float a = x[idx] + y[idx];      // register (fast!)
-float b = a * 2.0f;              // register (fast!)
-output[idx] = expf(b);           // write to memory
+float a = x[idx] + y[idx];   // register (fast!)
+float b = a * 2.0f;          // register (fast!)
+output[idx] = __expf(b);     // write to memory
 ```
 
-**Result:** 2.3x speedup, 99% efficiency, < 1e-6 relative error
+**Result:** 2.3x speedup, 98% efficiency, < 1e-6 relative error
 
 ## Quick Start
 
@@ -42,109 +42,131 @@ pytest tests/ -v
 python benchmarks/bench_add_mul_exp.py
 ```
 
+## Implemented Kernels
+
+### 1. Element-wise Fusion: `add_mul_exp`
+Fuses `exp((x + y) * 2)` into a single kernel.
+- **PyTorch**: 3 kernels, 7 memory ops
+- **CUDA**: 1 kernel, 3 memory ops
+- **Speedup**: 2.32x (98% efficiency)
+
+### 2. INT8 Quantization: `quantize_int8`
+Fuses `clamp(round(x / scale + zero_point), -128, 127).to(int8)` into a single kernel.
+- **PyTorch**: 5 kernels, 10 memory ops
+- **CUDA**: 1 kernel, 2 memory ops
+- **Speedup**: 7.14x (100% efficiency + 1.51x cache benefit)
+
 ## Usage
 
 ```python
 import torch
-from ops.cuda import add_mul_exp, add_mul_exp_cuda
-from ops.torch import add_mul_exp_pytorch
+from ops.cuda import add_mul_exp_cuda, quantize_int8_cuda
+from ops.torch import add_mul_exp_pytorch, quantize_int8_pytorch
 
+# Element-wise fusion
 x = torch.randn(1_000_000, device='cuda')
 y = torch.randn(1_000_000, device='cuda')
+result = add_mul_exp_cuda(x, y)  # CUDA fused
+baseline = add_mul_exp_pytorch(x, y)  # PyTorch unfused
 
-# Main API (dispatches to CUDA)
-result = add_mul_exp(x, y)
-
-# Or explicitly use CUDA implementation
-result_cuda = add_mul_exp_cuda(x, y)
-
-# PyTorch baseline for comparison
-result_pytorch = add_mul_exp_pytorch(x, y)
+# INT8 quantization
+x = torch.randn(1_000_000, device='cuda')
+quantized = quantize_int8_cuda(x, scale=4.2, zero_point=1.2)
 ```
 
 **Naming Convention:**
 - `operation_cuda()` - CUDA implementation (fused)
 - `operation_pytorch()` - PyTorch baseline (unfused)
-- `operation_triton()` - Triton implementation (future)
-- `operation()` - Main API (dispatches to best available)
 
 ## Performance
 
-**RTX 3070, 10M elements:**
+Benchmarks on **RTX 3070** with **10M elements**:
+
+### add_mul_exp: `exp((x + y) * 2)`
 ```
-PyTorch (unfused):   0.686ms
-CUDA (fused):        0.297ms
-Speedup:             2.31x (99.2% efficiency)
-Max relative error:  8.13e-07 ✓
+PyTorch:  0.690ms  (3 kernels, 7 memory ops, 267 MB traffic)
+CUDA:     0.297ms  (1 kernel,  3 memory ops, 114 MB traffic)
+Speedup:  2.32x    (98.0% roofline efficiency, max rel error: 8.9e-07)
+```
+
+### quantize_int8: FP32 → INT8 conversion
+```
+PyTorch:  0.911ms  (5 kernels, 10 memory ops, 381 MB traffic)
+CUDA:     0.128ms  (1 kernel,   2 memory ops,  76 MB traffic)
+Speedup:  7.14x    (100% roofline efficiency + 1.51x cache benefit, exact match)
 ```
 
 **Why is it faster?**
 
-Modern GPUs are **memory-bound**. Memory access is 400x slower than register operations.
+Modern GPUs are **memory-bound**. Memory access is ~400x slower than register operations. Kernel fusion eliminates intermediate memory round-trips by keeping values in registers.
 
-| Version | Memory Operations | Total Traffic | Time |
-|---------|------------------|---------------|------|
-| PyTorch | 7 (read x,y,a,b; write a,b,c) | 267 MB | 0.686ms |
-| CUDA Fused | 3 (read x,y; write c) | 114 MB | 0.297ms |
-| **Savings** | **4 fewer ops (57%)** | **153 MB (57%)** | **2.3x faster** |
-
-Intermediate values `a` and `b` stay in registers → **no memory round-trips**.
+**Performance metrics explained:**
+- **Roofline efficiency**: How close the kernel is to theoretical peak performance (100% = perfect)
+- **Cache benefit**: When actual performance exceeds DRAM-only predictions due to L2 cache hits (>1.0x is good!)
+- The quantize_int8 kernel achieves 100% efficiency AND benefits from cache, making it 1.51x faster than theory predicts
 
 ## Project Structure
 
 ```
 cuda-kernel-fusion/
-├── ops/                           # Multi-backend operations
-│   ├── cuda/                     # CUDA implementations
-│   │   ├── add_mul_exp.py       # Python wrapper + add_mul_exp_cuda()
-│   │   └── csrc/                # CUDA source files
-│   │       └── add_mul_exp.cu   # CUDA kernel
-│   ├── torch/                    # PyTorch reference implementations
-│   │   └── add_mul_exp.py       # add_mul_exp_pytorch()
-│   └── triton/                   # (future) Triton implementations
-├── tests/                         # 19 tests (correctness, accuracy, edge cases)
-│   └── test_add_mul_exp.py
-├── benchmarks/                    # Performance analysis
-│   ├── utils/                    # Reusable benchmarking framework
-│   ├── bench_add_mul_exp.py      # Example benchmark
-│   └── bench_template.py         # Template for new kernels
-├── pyproject.toml                # Config & dependencies
+├── ops/                           # Kernel implementations
+│   ├── cuda/                     # CUDA fused kernels (JIT compiled)
+│   │   ├── add_mul_exp.py       # Element-wise fusion wrapper
+│   │   ├── quantize_int8.py     # INT8 quantization wrapper
+│   │   └── csrc/                # CUDA kernel source files
+│   │       ├── add_mul_exp.cu   # Element-wise fusion kernel
+│   │       └── quantize_int8.cu # Quantization kernel
+│   └── torch/                    # PyTorch baseline implementations
+│       ├── add_mul_exp.py       # Unfused PyTorch ops
+│       └── quantize_int8.py     # Unfused quantization
+├── tests/                         # Comprehensive test suite
+│   ├── test_add_mul_exp_cuda.py      # CUDA tests
+│   ├── test_add_mul_exp_pytorch.py   # PyTorch tests
+│   ├── test_quantize_int8_cuda.py    # INT8 CUDA tests
+│   └── test_quantize_int8_pytorch.py # INT8 PyTorch tests
+├── benchmarks/                    # Performance analysis framework
+│   ├── utils/                    # Reusable benchmarking utilities
+│   │   ├── performance.py       # Timing & profiling tools
+│   │   └── analysis.py          # Numerical accuracy analysis
+│   ├── bench_add_mul_exp.py      # Element-wise fusion benchmark
+│   ├── bench_quantize_int8.py    # Quantization benchmark
+│   └── bench_template.py         # Template for new benchmarks
+├── pyproject.toml                # Package config & dependencies
 └── README.md
 ```
 
 ## Testing
 
 ```bash
-# Run all 19 tests
+# Run all tests
 pytest tests/ -v
 
-# Skip slow tests (16 tests)
-pytest tests/ -m "not slow"
-
-# Run only numerical accuracy tests
-pytest tests/ -m "numerical"
+# Run specific kernel tests
+pytest tests/test_add_mul_exp_cuda.py -v
+pytest tests/test_quantize_int8_cuda.py -v
 ```
 
 **Test coverage:**
-- ✅ Correctness (basic ops, known values, various sizes)
-- ✅ Input validation (CPU tensors, shape/dtype checks)
-- ✅ Edge cases (zeros, large values, numerical stability)
-- ✅ Accuracy (< 1e-5 relative error)
+- Correctness (basic ops, known values, various sizes)
+- Input validation (CPU/GPU tensors, dtype checks)
+- Edge cases (zeros, large values, numerical stability)
+- Numerical accuracy (relative error < 1e-5 for FP32)
 
 ## Benchmarking
 
 ```bash
-# Run comprehensive benchmark
+# Run benchmarks for each kernel
 python benchmarks/bench_add_mul_exp.py
+python benchmarks/bench_quantize_int8.py
 ```
 
-**Output includes:**
-- ⏱️ Detailed timing with warmup and statistics
-- 🔬 Numerical accuracy analysis
-- 📊 Memory bandwidth calculations
-- 🧪 PyTorch profiler kernel-level details
+**Each benchmark provides:**
+- Detailed timing statistics (warmup, mean, median, std)
+- Numerical accuracy analysis (abs/rel errors, percentiles)
+- Memory traffic analysis (ops count, bandwidth, efficiency)
+- PyTorch profiler output (kernel-level timing)
 
-See `benchmarks/README.md` for details on the benchmarking framework.
+See [benchmarks/README.md](benchmarks/README.md) for the benchmarking framework documentation.
 
 ## Adding New Operations
 
