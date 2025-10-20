@@ -9,8 +9,11 @@ Naming convention:
 """
 
 from .add_mul_exp import add_mul_exp, add_mul_exp_cuda
+from .quantize_int8 import quantize_int8, quantize_int8_cuda
 
 __all__ = [
-    "add_mul_exp",        # Main API
-    "add_mul_exp_cuda",   # CUDA implementation
+    "add_mul_exp",  # Main API
+    "add_mul_exp_cuda",  # CUDA implementation
+    "quantize_int8",  # Main API
+    "quantize_int8_cuda",  # CUDA implementation
 ]
