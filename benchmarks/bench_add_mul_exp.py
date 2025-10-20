@@ -12,19 +12,25 @@ import sys
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "8.6")
 
 import torch
-
-from utils import (
-    analyze_numerical_accuracy,
+from utils.analysis import analyze_numerical_accuracy
+from utils.performance import (
     analyze_memory_traffic,
     compare_implementations,
     print_memory_analysis,
     profile_with_pytorch_profiler,
 )
 
+# ============================================================================
+# BENCHMARK CONFIGURATION - Modify this section for new kernels
+# ============================================================================
+OPERATION_NAME = "Add-Mul-Exp Fusion"
+OPERATION_DESCRIPTION = "exp((x + y) * 2)"
+
+# Display header
 print("=" * 70)
-print("CUDA KERNEL FUSION BENCHMARK: add_mul_exp")
+print(f"CUDA KERNEL FUSION BENCHMARK: {OPERATION_NAME}")
 print("=" * 70)
-print("\nOperation: exp((x + y) * 2)")
+print(f"\nOperation: {OPERATION_DESCRIPTION}")
 print("Comparing: PyTorch (3 kernels) vs Custom CUDA (1 fused kernel)")
 
 # Load CUDA extension
@@ -34,6 +40,10 @@ sys.stdout.flush()
 try:
     from ops.cuda import add_mul_exp_cuda
     from ops.torch import add_mul_exp_pytorch
+
+    # Generic function references
+    baseline_func = add_mul_exp_pytorch
+    optimized_func = add_mul_exp_cuda
 
     print("✓ CUDA extension loaded")
 except ImportError as e:
@@ -45,9 +55,33 @@ except ImportError as e:
 
 def main():
     """Run comprehensive benchmark."""
-    # Configuration
-    size = 10_000_000  # 10 million elements
+    # ========================================================================
+    # BENCHMARK PARAMETERS - Modify for your operation
+    # ========================================================================
+    size = 10_000_000
+    warmup_iterations = 10
+    benchmark_iterations = 100
+    profiler_iterations = 10
 
+    # Memory operation counts (for theoretical speedup analysis)
+    # PyTorch: add(x, y) -> mul(a, 2) -> exp(b)
+    #   Reads: x, y, a, b (4 reads from DRAM)
+    #   Writes: a, b, result (3 writes to DRAM)
+    # CUDA: All operations fused, intermediates stay in registers
+    #   Reads: x, y (2 reads from DRAM)
+    #   Writes: result (1 write to DRAM)
+    memory_config = {
+        "baseline_reads": 4,
+        "baseline_writes": 3,
+        "baseline_kernel_launches": 3,
+        "optimized_reads": 2,
+        "optimized_writes": 1,
+        "optimized_kernel_launches": 1,
+    }
+
+    # ========================================================================
+    # SETUP
+    # ========================================================================
     print(f"\n[SETUP] Test Configuration:")
     print(f"  Array size:     {size:,} elements")
     print(f"  Data type:      float32")
@@ -62,64 +96,72 @@ def main():
     gpu_name = torch.cuda.get_device_name(0)
     print(f"  GPU:            {gpu_name}")
 
-    # Allocate tensors
+    # Prepare benchmark arguments
     print("\n[SETUP] Allocating tensors on GPU...")
     sys.stdout.flush()
     x = torch.randn(size, device="cuda", dtype=torch.float32)
     y = torch.randn(size, device="cuda", dtype=torch.float32)
+    benchmark_args = (x, y)
     print("✓ Tensors allocated")
 
     # Quick sanity check
     print("\n[SETUP] Testing CUDA kernel...")
     sys.stdout.flush()
     try:
-        _ = add_mul_exp_cuda(x[:100], y[:100])
+        _ = optimized_func(x[:100], y[:100])
         print("✓ CUDA kernel working")
     except Exception as e:
         print(f"✗ CUDA kernel failed: {e}")
         sys.exit(1)
 
-    # Benchmark both implementations
+    # ========================================================================
+    # BENCHMARKING
+    # ========================================================================
     baseline_result, optimized_result = compare_implementations(
-        baseline_func=add_mul_exp_pytorch,
-        optimized_func=add_mul_exp_cuda,
-        args=(x, y),
+        baseline_func=baseline_func,
+        optimized_func=optimized_func,
+        args=benchmark_args,
         baseline_name="PyTorch",
         optimized_name="CUDA",
-        warmup=10,
-        iterations=100,
+        warmup=warmup_iterations,
+        iterations=benchmark_iterations,
         verbose=True,
     )
 
-    # Memory traffic analysis
+    # ========================================================================
+    # MEMORY TRAFFIC ANALYSIS
+    # ========================================================================
     memory_stats = analyze_memory_traffic(
         tensor_size=size,
-        baseline_reads=4,  # PyTorch reads: x, y, a, b
-        baseline_writes=3,  # PyTorch writes: a, b, c
-        optimized_reads=2,  # CUDA reads: x, y
-        optimized_writes=1,  # CUDA writes: c
         baseline_time_ms=baseline_result.mean_time_ms,
         optimized_time_ms=optimized_result.mean_time_ms,
+        **memory_config,
     )
     print_memory_analysis(memory_stats)
 
-    # Numerical accuracy analysis
+    # ========================================================================
+    # NUMERICAL ACCURACY ANALYSIS
+    # ========================================================================
     accuracy_metrics = analyze_numerical_accuracy(
         baseline=baseline_result.result,
         optimized=optimized_result.result,
         verbose=True,
     )
 
-    # PyTorch profiler for kernel-level details
+    # ========================================================================
+    # PYTORCH PROFILER (Kernel-level timing)
+    # ========================================================================
     profile_with_pytorch_profiler(
         [
-            (add_mul_exp_pytorch, "PyTorch", (x, y)),
-            (add_mul_exp_cuda, "CUDA", (x, y)),
+            (baseline_func, "PyTorch", benchmark_args),
+            (optimized_func, "CUDA", benchmark_args),
         ],
-        iterations=10,
+        iterations=profiler_iterations,
     )
 
-    # Summary
+    # ========================================================================
+    # SUMMARY
+    # ========================================================================
     print(f"\n{'=' * 70}")
     print("SUMMARY")
     print(f"{'=' * 70}")
@@ -128,7 +170,9 @@ def main():
     print(f"  Speedup:          {speedup:.2f}x")
     print(f"  Max abs error:    {accuracy_metrics.max_abs_diff:.6e}")
     print(f"  Max rel error:    {accuracy_metrics.max_rel_diff:.6e}")
-    print(f"  Passes rtol=1e-5: {'✓ PASS' if accuracy_metrics.passes_1e5 else '✗ FAIL'}")
+    print(
+        f"  Passes rtol=1e-5: {'✓ PASS' if accuracy_metrics.passes_1e5 else '✗ FAIL'}"
+    )
 
     print(f"\n{'=' * 70}")
     print("Why is CUDA faster?")
