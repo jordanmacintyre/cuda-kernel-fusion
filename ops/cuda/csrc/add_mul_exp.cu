@@ -79,8 +79,8 @@ __global__ void add_mul_exp_kernel(
          * Compare to unfused PyTorch: 6 (3 reads + 3 writes)
          */
         float a = x[idx] + y[idx];      // Add (in register)
-        float b = a * 2.0f;              // Multiply (in register)
-        output[idx] = expf(b);           // Exp and write to memory
+        float b = a * 2.0f;             // Multiply (in register)
+        output[idx] = __expf(b);        // Exp and write to memory
         
         /*
          * expf() = Fast single-precision exponential function
