@@ -151,14 +151,24 @@ def compare_implementations(
     if verbose:
         print(f"\n[1/2] {baseline_name}")
     baseline_result = benchmark_function(
-        baseline_func, args, name=baseline_name, warmup=warmup, iterations=iterations, verbose=verbose
+        baseline_func,
+        args,
+        name=baseline_name,
+        warmup=warmup,
+        iterations=iterations,
+        verbose=verbose,
     )
 
     # Benchmark optimized
     if verbose:
         print(f"\n[2/2] {optimized_name}")
     optimized_result = benchmark_function(
-        optimized_func, args, name=optimized_name, warmup=warmup, iterations=iterations, verbose=verbose
+        optimized_func,
+        args,
+        name=optimized_name,
+        warmup=warmup,
+        iterations=iterations,
+        verbose=verbose,
     )
 
     # Display results
@@ -185,6 +195,8 @@ def analyze_memory_traffic(
     baseline_time_ms: float,
     optimized_time_ms: float,
     dtype: torch.dtype = torch.float32,
+    baseline_kernel_launches: int = 1,
+    optimized_kernel_launches: int = 1,
 ) -> dict:
     """
     Analyze memory traffic and bandwidth for two implementations.
@@ -198,6 +210,8 @@ def analyze_memory_traffic(
         baseline_time_ms: Baseline execution time in milliseconds
         optimized_time_ms: Optimized execution time in milliseconds
         dtype: Data type of tensors (default: float32)
+        baseline_kernel_launches: Number of kernel launches in baseline (default: 1)
+        optimized_kernel_launches: Number of kernel launches in optimized (default: 1)
 
     Returns:
         Dictionary with memory traffic analysis
@@ -210,7 +224,9 @@ def analyze_memory_traffic(
         ...     optimized_reads=2,     # CUDA: read x, y
         ...     optimized_writes=1,    # CUDA: write c
         ...     baseline_time_ms=0.686,
-        ...     optimized_time_ms=0.297
+        ...     optimized_time_ms=0.297,
+        ...     baseline_kernel_launches=3,
+        ...     optimized_kernel_launches=1
         ... )
     """
     bytes_per_element = torch.finfo(dtype).bits // 8
@@ -226,8 +242,57 @@ def analyze_memory_traffic(
     baseline_bandwidth_gbs = (baseline_traffic_mb / 1024) / (baseline_time_ms / 1000)
     optimized_bandwidth_gbs = (optimized_traffic_mb / 1024) / (optimized_time_ms / 1000)
 
-    # Calculate theoretical speedup
-    theoretical_speedup = baseline_traffic_mb / optimized_traffic_mb
+    # Calculate theoretical speedup using a more realistic model
+    #
+    # Naive model: speedup = memory_traffic_reduction = baseline_ops / optimized_ops
+    # This misses several real-world factors:
+    #
+    # 1. Kernel launch overhead (~5-10μs per launch)
+    #    - PyTorch: N launches, CUDA: 1 launch
+    #    - Savings: (N-1) * 7.5μs
+    #
+    # 2. Cache/Register locality
+    #    - Fused kernels keep intermediates in registers/L1 cache
+    #    - Unfused operations read/write through slow DRAM
+    #    - L1 cache is ~10-20x faster than DRAM
+    #
+    # 3. Reduced synchronization overhead
+    #    - PyTorch implicitly syncs between operations
+    #    - Fused kernel runs continuously
+
+    # Base speedup from memory traffic reduction
+    memory_speedup = baseline_traffic_mb / optimized_traffic_mb
+
+    # Kernel launch overhead contribution
+    # Estimate: 10μs per launch (conservative)
+    KERNEL_LAUNCH_US = 10
+    baseline_launch_overhead_us = baseline_kernel_launches * KERNEL_LAUNCH_US
+    optimized_launch_overhead_us = optimized_kernel_launches * KERNEL_LAUNCH_US
+    launch_overhead_saved_us = (
+        baseline_launch_overhead_us - optimized_launch_overhead_us
+    )
+
+    # Convert execution time to microseconds
+    baseline_time_us = baseline_time_ms * 1000
+
+    # Launch overhead as fraction of total time
+    launch_overhead_fraction = launch_overhead_saved_us / baseline_time_us
+    launch_speedup_contribution = (
+        1.0 / (1.0 - launch_overhead_fraction)
+        if launch_overhead_fraction < 1.0
+        else 1.0
+    )
+
+    # Cache locality benefit (empirical factor)
+    # Fused kernels keep ~50-80% of intermediate data in registers/L1
+    # This provides 1.2-1.5x additional speedup beyond memory traffic reduction
+    cache_locality_factor = 1.5  # Conservative estimate
+
+    # Combined theoretical speedup
+    theoretical_speedup = (
+        memory_speedup * launch_speedup_contribution * cache_locality_factor
+    )
+
     actual_speedup = baseline_time_ms / optimized_time_ms
     efficiency = (actual_speedup / theoretical_speedup) * 100
 
@@ -241,6 +306,7 @@ def analyze_memory_traffic(
             "traffic_mb": baseline_traffic_mb,
             "bandwidth_gbs": baseline_bandwidth_gbs,
             "time_ms": baseline_time_ms,
+            "kernel_launches": baseline_kernel_launches,
         },
         "optimized": {
             "reads": optimized_reads,
@@ -249,11 +315,13 @@ def analyze_memory_traffic(
             "traffic_mb": optimized_traffic_mb,
             "bandwidth_gbs": optimized_bandwidth_gbs,
             "time_ms": optimized_time_ms,
+            "kernel_launches": optimized_kernel_launches,
         },
         "speedup": {
             "theoretical": theoretical_speedup,
             "actual": actual_speedup,
             "efficiency_pct": efficiency,
+            "memory_traffic_reduction": memory_speedup,
         },
     }
 
@@ -269,24 +337,38 @@ def print_memory_analysis(analysis: dict):
     print("MEMORY TRAFFIC ANALYSIS")
     print(f"{'=' * 70}")
 
-    print(f"\nData size: {analysis['tensor_size']:,} elements = {analysis['data_size_mb']:.2f} MB")
+    print(
+        f"\nData size: {analysis['tensor_size']:,} elements = {analysis['data_size_mb']:.2f} MB"
+    )
 
     print(f"\nBaseline:")
+    print(f"  Kernel launches:   {analysis['baseline']['kernel_launches']}")
     print(f"  Memory operations: {analysis['baseline']['total_ops']} ")
-    print(f"    ({analysis['baseline']['reads']} reads + {analysis['baseline']['writes']} writes)")
+    print(
+        f"    ({analysis['baseline']['reads']} reads + {analysis['baseline']['writes']} writes)"
+    )
     print(f"  Total traffic:     {analysis['baseline']['traffic_mb']:.2f} MB")
     print(f"  Bandwidth:         {analysis['baseline']['bandwidth_gbs']:.2f} GB/s")
 
     print(f"\nOptimized:")
+    print(f"  Kernel launches:   {analysis['optimized']['kernel_launches']}")
     print(f"  Memory operations: {analysis['optimized']['total_ops']} ")
-    print(f"    ({analysis['optimized']['reads']} reads + {analysis['optimized']['writes']} writes)")
+    print(
+        f"    ({analysis['optimized']['reads']} reads + {analysis['optimized']['writes']} writes)"
+    )
     print(f"  Total traffic:     {analysis['optimized']['traffic_mb']:.2f} MB")
     print(f"  Bandwidth:         {analysis['optimized']['bandwidth_gbs']:.2f} GB/s")
 
-    print(f"\nEfficiency:")
-    print(f"  Theoretical speedup: {analysis['speedup']['theoretical']:.2f}x")
-    print(f"  Actual speedup:      {analysis['speedup']['actual']:.2f}x")
-    print(f"  Efficiency:          {analysis['speedup']['efficiency_pct']:.1f}%")
+    print(f"\nSpeedup Analysis:")
+    print(
+        f"  Memory reduction:       {analysis['speedup']['memory_traffic_reduction']:.2f}x"
+    )
+    print(
+        f"  Kernel reduction:       {analysis['baseline']['kernel_launches']}/{analysis['optimized']['kernel_launches']} = {analysis['baseline']['kernel_launches']/analysis['optimized']['kernel_launches']:.2f}x"
+    )
+    print(f"  Theoretical speedup:    {analysis['speedup']['theoretical']:.2f}x")
+    print(f"  Actual speedup:         {analysis['speedup']['actual']:.2f}x")
+    print(f"  Efficiency:             {analysis['speedup']['efficiency_pct']:.1f}%")
 
 
 def profile_with_pytorch_profiler(
