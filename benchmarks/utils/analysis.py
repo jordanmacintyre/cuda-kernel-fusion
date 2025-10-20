@@ -72,6 +72,9 @@ def analyze_numerical_accuracy(
     """
     Comprehensive numerical accuracy analysis comparing two tensors.
 
+    Automatically handles integer dtypes (int8, int16, int32, int64) by converting
+    to int for exact comparison, and float dtypes with relative error analysis.
+
     Args:
         baseline: Baseline result (e.g., from PyTorch)
         optimized: Optimized result (e.g., from custom CUDA)
@@ -86,13 +89,30 @@ def analyze_numerical_accuracy(
         >>> metrics = analyze_numerical_accuracy(baseline, optimized)
         >>> print(metrics)
     """
+    # Handle integer dtypes by converting to int32/int64 for comparison
+    is_integer_type = baseline.dtype in [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8]
+
+    if is_integer_type:
+        # Convert to int for exact arithmetic (avoid overflow in int8)
+        baseline_comp = baseline.int()
+        optimized_comp = optimized.int()
+    else:
+        baseline_comp = baseline
+        optimized_comp = optimized
+
     # Absolute differences
-    abs_diff = torch.abs(baseline - optimized)
+    abs_diff = torch.abs(baseline_comp - optimized_comp)
 
     # Relative differences (avoid division by zero)
-    denominator = torch.maximum(torch.abs(baseline), torch.abs(optimized))
-    denominator = torch.clamp(denominator, min=1e-10)
-    rel_diff = abs_diff / denominator
+    # For integers, convert to float for relative error calculation
+    if is_integer_type:
+        denominator = torch.maximum(torch.abs(baseline_comp.float()), torch.abs(optimized_comp.float()))
+        denominator = torch.clamp(denominator, min=1e-10)
+        rel_diff = abs_diff.float() / denominator
+    else:
+        denominator = torch.maximum(torch.abs(baseline_comp), torch.abs(optimized_comp))
+        denominator = torch.clamp(denominator, min=1e-10)
+        rel_diff = abs_diff / denominator
 
     # Find max difference location
     max_diff_idx = torch.argmax(abs_diff).item()
@@ -105,18 +125,31 @@ def analyze_numerical_accuracy(
 
     # Tolerance checks
     passes = {}
-    for rtol in [1e-3, 1e-4, 1e-5, 1e-6, 1e-7]:
-        passes[rtol] = torch.allclose(baseline, optimized, rtol=rtol, atol=1e-8)
+    if is_integer_type:
+        # For integers, check exact match and small absolute differences
+        exact_match = torch.equal(baseline, optimized)
+        passes[1e-3] = exact_match or (abs_diff <= 1).all()  # Within 1
+        passes[1e-4] = exact_match or (abs_diff <= 1).all()
+        passes[1e-5] = exact_match  # Exact match
+        passes[1e-6] = exact_match
+        passes[1e-7] = exact_match
+    else:
+        for rtol in [1e-3, 1e-4, 1e-5, 1e-6, 1e-7]:
+            passes[rtol] = torch.allclose(baseline, optimized, rtol=rtol, atol=1e-8)
+
+    # Convert to float for statistical calculations (needed for integer types)
+    abs_diff_float = abs_diff.float() if is_integer_type else abs_diff
+    rel_diff_float = rel_diff.float() if is_integer_type else rel_diff
 
     metrics = AccuracyMetrics(
         max_abs_diff=abs_diff.max().item(),
-        mean_abs_diff=abs_diff.mean().item(),
-        median_abs_diff=abs_diff.median().item(),
-        std_abs_diff=abs_diff.std().item(),
+        mean_abs_diff=abs_diff_float.mean().item(),
+        median_abs_diff=abs_diff_float.median().item(),
+        std_abs_diff=abs_diff_float.std().item(),
         max_rel_diff=rel_diff.max().item(),
-        mean_rel_diff=rel_diff.mean().item(),
-        median_rel_diff=rel_diff.median().item(),
-        std_rel_diff=rel_diff.std().item(),
+        mean_rel_diff=rel_diff_float.mean().item(),
+        median_rel_diff=rel_diff_float.median().item(),
+        std_rel_diff=rel_diff_float.std().item(),
         max_diff_idx=max_diff_idx,
         baseline_value_at_max=baseline.flatten()[max_diff_idx].item(),
         optimized_value_at_max=optimized.flatten()[max_diff_idx].item(),
@@ -133,8 +166,20 @@ def analyze_numerical_accuracy(
 
     if verbose:
         print(f"\n{'=' * 70}")
-        print("NUMERICAL ACCURACY ANALYSIS")
+        dtype_str = f" ({baseline.dtype})" if is_integer_type else ""
+        print(f"NUMERICAL ACCURACY ANALYSIS{dtype_str}")
         print(f"{'=' * 70}\n")
+
+        if is_integer_type:
+            exact_match = torch.equal(baseline, optimized)
+            print(f"Integer Comparison:")
+            print(f"  Exact match: {'✓ YES' if exact_match else '✗ NO'}")
+            if not exact_match:
+                num_mismatches = (abs_diff != 0).sum().item()
+                print(f"  Mismatches:  {num_mismatches:,} / {baseline.numel():,} "
+                      f"({100*num_mismatches/baseline.numel():.4f}%)")
+            print()
+
         print(metrics)
 
         # Additional details
@@ -148,14 +193,18 @@ def analyze_numerical_accuracy(
         print(f"\nError Distribution (percentiles):")
         percentiles = [50, 90, 95, 99, 99.9, 100]
         for p in percentiles:
-            abs_val = torch.quantile(abs_diff, p / 100).item()
-            rel_val = torch.quantile(rel_diff, p / 100).item()
+            abs_val = torch.quantile(abs_diff_float, p / 100).item()
+            rel_val = torch.quantile(rel_diff_float, p / 100).item()
             print(f"  {p:5.1f}%: abs={abs_val:.6e}, rel={rel_val:.6e}")
 
         # Value ranges
         print(f"\nValue Range Analysis:")
-        print(f"  Baseline:  [{baseline.min():.6e}, {baseline.max():.6e}], mean={baseline.mean():.6e}")
-        print(f"  Optimized: [{optimized.min():.6e}, {optimized.max():.6e}], mean={optimized.mean():.6e}")
+        if is_integer_type:
+            print(f"  Baseline:  [{baseline.min().item()}, {baseline.max().item()}]")
+            print(f"  Optimized: [{optimized.min().item()}, {optimized.max().item()}]")
+        else:
+            print(f"  Baseline:  [{baseline.min():.6e}, {baseline.max():.6e}], mean={baseline.mean():.6e}")
+            print(f"  Optimized: [{optimized.min():.6e}, {optimized.max():.6e}], mean={optimized.mean():.6e}")
 
     return metrics
 
