@@ -6,7 +6,7 @@ Provides reusable functions for timing, comparing, and profiling CUDA operations
 
 import time
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -33,6 +33,97 @@ class BenchmarkResult:
             f"  Median: {self.median_time_ms:.3f} ms\n"
             f"  Range:  [{self.min_time_ms:.3f}, {self.max_time_ms:.3f}] ms"
         )
+
+
+def measure_gpu_specs(size_mb: int = 1000, num_iterations: int = 100, verbose: bool = True) -> dict:
+    """
+    Measure actual achievable GPU memory bandwidth and estimate peak FLOPs.
+
+    This provides more accurate specs than manufacturer specifications, as it
+    measures what's actually achievable on your specific hardware configuration.
+
+    Args:
+        size_mb: Size of data to transfer in MB (default: 1000 MB)
+        num_iterations: Number of iterations for measurement (default: 100)
+        verbose: Print measurement progress
+
+    Returns:
+        Dictionary with 'peak_bandwidth' (bytes/sec) and 'peak_flops' (FLOPs/sec)
+
+    Example:
+        >>> specs = measure_gpu_specs()
+        >>> print(f"Bandwidth: {specs['peak_bandwidth']/1e9:.1f} GB/s")
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA not available")
+
+    if verbose:
+        print("\n[Measuring GPU specs...]")
+
+    size = size_mb * 1024 * 1024 // 4  # Convert MB to float32 elements
+
+    # Measure memory bandwidth
+    if verbose:
+        print(f"  Measuring memory bandwidth ({size_mb} MB, {num_iterations} iterations)...")
+
+    src = torch.randn(size, device='cuda', dtype=torch.float32)
+    dst = torch.empty_like(src)
+
+    # Warmup
+    for _ in range(10):
+        dst.copy_(src)
+    torch.cuda.synchronize()
+
+    # Measure bandwidth
+    start = time.perf_counter()
+    for _ in range(num_iterations):
+        dst.copy_(src)
+    torch.cuda.synchronize()
+    elapsed = time.perf_counter() - start
+
+    # Calculate bandwidth (read + write)
+    bytes_transferred = size * 4 * 2 * num_iterations  # float32 = 4 bytes, read+write
+    measured_bandwidth = bytes_transferred / elapsed
+
+    if verbose:
+        print(f"  ✓ Measured bandwidth: {measured_bandwidth/1e9:.1f} GB/s")
+
+    # For FLOPs, use a simple estimation based on GPU architecture
+    # This is a rough estimate - actual peak depends on specific operations
+    # For now, we'll use manufacturer specs but this could be improved with
+    # actual FLOP measurement using FMAD operations
+    gpu_name = torch.cuda.get_device_name(0)
+
+    # Common GPU specs (FP32 TFLOPS)
+    gpu_flops_specs = {
+        "RTX 3070": 20.3e12,
+        "RTX 3080": 29.8e12,
+        "RTX 3090": 35.6e12,
+        "RTX 4090": 82.6e12,
+        "A100": 19.5e12,
+        "V100": 15.7e12,
+    }
+
+    # Try to match GPU name
+    estimated_flops = None
+    for gpu_model, flops in gpu_flops_specs.items():
+        if gpu_model in gpu_name:
+            estimated_flops = flops
+            break
+
+    if estimated_flops is None:
+        # Default conservative estimate: 10 TFLOPS
+        estimated_flops = 10e12
+        if verbose:
+            print(f"  ! Unknown GPU, using conservative FLOP estimate: {estimated_flops/1e12:.1f} TFLOPS")
+    else:
+        if verbose:
+            print(f"  ✓ Estimated peak FLOPs: {estimated_flops/1e12:.1f} TFLOPS")
+
+    return {
+        'peak_bandwidth': measured_bandwidth,
+        'peak_flops': estimated_flops,
+    }
 
 
 def benchmark_function(
@@ -186,6 +277,73 @@ def compare_implementations(
     return baseline_result, optimized_result
 
 
+def roofline_efficiency(kernel_stats: dict, gpu_specs: dict) -> tuple:
+    """
+    Calculate efficiency with proper handling of cache effects.
+
+    Uses roofline model to determine theoretical best time, then compares to actual.
+    When actual time is better than theoretical, cache effects are detected and
+    reported separately.
+
+    Args:
+        kernel_stats: dict with 'flops', 'bytes', 'time_ms'
+        gpu_specs: dict with 'peak_flops', 'peak_bandwidth'
+
+    Returns:
+        efficiency: 0-1 (0-100%), capped at 100%
+        bottleneck: 'compute' or 'memory'
+        cache_benefit: >= 1.0, indicates how much cache is helping
+
+    Example:
+        >>> stats = {
+        ...     'flops': 10_000_000,  # Total floating point operations
+        ...     'bytes': 40_000_000,  # Total bytes transferred
+        ...     'time_ms': 0.5        # Execution time in ms
+        ... }
+        >>> specs = {
+        ...     'peak_flops': 20e12,      # 20 TFLOPS
+        ...     'peak_bandwidth': 448e9   # 448 GB/s
+        ... }
+        >>> efficiency, bottleneck, cache_benefit = roofline_efficiency(stats, specs)
+    """
+    # Calculate arithmetic intensity (FLOPs per byte)
+    arithmetic_intensity = kernel_stats["flops"] / kernel_stats["bytes"]
+
+    # Ridge point: where compute and memory bounds intersect
+    ridge_point = gpu_specs["peak_flops"] / gpu_specs["peak_bandwidth"]
+
+    # Calculate minimum achievable time based on roofline model
+    # Time is limited by max(compute_time, memory_time)
+    compute_time_s = kernel_stats["flops"] / gpu_specs["peak_flops"]
+    memory_time_s = kernel_stats["bytes"] / gpu_specs["peak_bandwidth"]
+
+    if arithmetic_intensity < ridge_point:
+        # Memory-bound: memory transfer is the bottleneck
+        theoretical_time_s = memory_time_s
+        bottleneck = "memory"
+    else:
+        # Compute-bound: computation is the bottleneck
+        theoretical_time_s = compute_time_s
+        bottleneck = "compute"
+
+    actual_time_s = kernel_stats["time_ms"] * 1e-3
+
+    # Calculate raw efficiency ratio
+    # raw_efficiency > 1.0 means actual is faster than theoretical (cache helping!)
+    # raw_efficiency < 1.0 means actual is slower than theoretical (inefficient)
+    raw_efficiency = theoretical_time_s / actual_time_s
+
+    # Cap efficiency at 100% - can't be more efficient than theoretically perfect
+    efficiency = min(1.0, raw_efficiency)
+
+    # Cache benefit: how much faster than theoretical prediction
+    # >1.0 means cache/optimizations are helping beyond our simple model
+    # If raw_efficiency = 1.5, we're 1.5x faster than theory, so cache_benefit = 1.5x
+    cache_benefit = raw_efficiency if raw_efficiency > 1.0 else 1.0
+
+    return efficiency, bottleneck, cache_benefit
+
+
 def analyze_memory_traffic(
     tensor_size: int,
     baseline_reads: int,
@@ -197,6 +355,9 @@ def analyze_memory_traffic(
     dtype: torch.dtype = torch.float32,
     baseline_kernel_launches: int = 1,
     optimized_kernel_launches: int = 1,
+    baseline_flops: Optional[int] = None,
+    optimized_flops: Optional[int] = None,
+    gpu_specs: Optional[dict] = None,
 ) -> dict:
     """
     Analyze memory traffic and bandwidth for two implementations.
@@ -212,6 +373,10 @@ def analyze_memory_traffic(
         dtype: Data type of tensors (default: float32)
         baseline_kernel_launches: Number of kernel launches in baseline (default: 1)
         optimized_kernel_launches: Number of kernel launches in optimized (default: 1)
+        baseline_flops: Optional FLOPs for baseline (enables roofline analysis)
+        optimized_flops: Optional FLOPs for optimized (enables roofline analysis)
+        gpu_specs: Optional GPU specs dict with 'peak_flops' and 'peak_bandwidth'
+                   (enables roofline analysis)
 
     Returns:
         Dictionary with memory traffic analysis
@@ -242,59 +407,64 @@ def analyze_memory_traffic(
     baseline_bandwidth_gbs = (baseline_traffic_mb / 1024) / (baseline_time_ms / 1000)
     optimized_bandwidth_gbs = (optimized_traffic_mb / 1024) / (optimized_time_ms / 1000)
 
-    # Calculate theoretical speedup using a more realistic model
-    #
-    # Naive model: speedup = memory_traffic_reduction = baseline_ops / optimized_ops
-    # This misses several real-world factors:
-    #
-    # 1. Kernel launch overhead (~5-10μs per launch)
-    #    - PyTorch: N launches, CUDA: 1 launch
-    #    - Savings: (N-1) * 7.5μs
-    #
-    # 2. Cache/Register locality
-    #    - Fused kernels keep intermediates in registers/L1 cache
-    #    - Unfused operations read/write through slow DRAM
-    #    - L1 cache is ~10-20x faster than DRAM
-    #
-    # 3. Reduced synchronization overhead
-    #    - PyTorch implicitly syncs between operations
-    #    - Fused kernel runs continuously
-
-    # Base speedup from memory traffic reduction
+    # Calculate speedup
+    actual_speedup = baseline_time_ms / optimized_time_ms
     memory_speedup = baseline_traffic_mb / optimized_traffic_mb
 
-    # Kernel launch overhead contribution
-    # Estimate: 10μs per launch (conservative)
-    KERNEL_LAUNCH_US = 10
-    baseline_launch_overhead_us = baseline_kernel_launches * KERNEL_LAUNCH_US
-    optimized_launch_overhead_us = optimized_kernel_launches * KERNEL_LAUNCH_US
-    launch_overhead_saved_us = (
-        baseline_launch_overhead_us - optimized_launch_overhead_us
+    # Use roofline model if FLOP counts and GPU specs are provided
+    use_roofline = (
+        baseline_flops is not None
+        and optimized_flops is not None
+        and gpu_specs is not None
     )
 
-    # Convert execution time to microseconds
-    baseline_time_us = baseline_time_ms * 1000
+    if use_roofline:
+        # Roofline-based efficiency analysis
+        baseline_stats = {
+            "flops": baseline_flops,
+            "bytes": baseline_traffic_mb * 1024 * 1024,  # Convert to bytes
+            "time_ms": baseline_time_ms,
+        }
+        optimized_stats = {
+            "flops": optimized_flops,
+            "bytes": optimized_traffic_mb * 1024 * 1024,  # Convert to bytes
+            "time_ms": optimized_time_ms,
+        }
 
-    # Launch overhead as fraction of total time
-    launch_overhead_fraction = launch_overhead_saved_us / baseline_time_us
-    launch_speedup_contribution = (
-        1.0 / (1.0 - launch_overhead_fraction)
-        if launch_overhead_fraction < 1.0
-        else 1.0
-    )
+        baseline_efficiency, baseline_bottleneck, baseline_cache_benefit = roofline_efficiency(
+            baseline_stats, gpu_specs
+        )
+        optimized_efficiency, optimized_bottleneck, optimized_cache_benefit = roofline_efficiency(
+            optimized_stats, gpu_specs
+        )
 
-    # Cache locality benefit (empirical factor)
-    # Fused kernels keep ~50-80% of intermediate data in registers/L1
-    # This provides 1.2-1.5x additional speedup beyond memory traffic reduction
-    cache_locality_factor = 1.5  # Conservative estimate
+        # Detect significant cache effects (>10% faster than theoretical)
+        baseline_cache_detected = baseline_cache_benefit > 1.1
+        optimized_cache_detected = optimized_cache_benefit > 1.1
 
-    # Combined theoretical speedup
-    theoretical_speedup = (
-        memory_speedup * launch_speedup_contribution * cache_locality_factor
-    )
-
-    actual_speedup = baseline_time_ms / optimized_time_ms
-    efficiency = (actual_speedup / theoretical_speedup) * 100
+        speedup_analysis = {
+            "actual": actual_speedup,
+            "memory_traffic_reduction": memory_speedup,
+            "baseline_efficiency_pct": baseline_efficiency * 100,
+            "optimized_efficiency_pct": optimized_efficiency * 100,
+            "baseline_cache_benefit": baseline_cache_benefit,
+            "optimized_cache_benefit": optimized_cache_benefit,
+            "baseline_cache_detected": baseline_cache_detected,
+            "optimized_cache_detected": optimized_cache_detected,
+            "baseline_bottleneck": baseline_bottleneck,
+            "optimized_bottleneck": optimized_bottleneck,
+            "baseline_arithmetic_intensity": baseline_flops
+            / (baseline_traffic_mb * 1024 * 1024),
+            "optimized_arithmetic_intensity": optimized_flops
+            / (optimized_traffic_mb * 1024 * 1024),
+        }
+    else:
+        # No efficiency calculation without roofline data
+        # Simple memory reduction is reported but no efficiency metric
+        speedup_analysis = {
+            "actual": actual_speedup,
+            "memory_traffic_reduction": memory_speedup,
+        }
 
     return {
         "tensor_size": tensor_size,
@@ -317,12 +487,7 @@ def analyze_memory_traffic(
             "time_ms": optimized_time_ms,
             "kernel_launches": optimized_kernel_launches,
         },
-        "speedup": {
-            "theoretical": theoretical_speedup,
-            "actual": actual_speedup,
-            "efficiency_pct": efficiency,
-            "memory_traffic_reduction": memory_speedup,
-        },
+        "speedup": speedup_analysis,
     }
 
 
@@ -366,9 +531,54 @@ def print_memory_analysis(analysis: dict):
     print(
         f"  Kernel reduction:       {analysis['baseline']['kernel_launches']}/{analysis['optimized']['kernel_launches']} = {analysis['baseline']['kernel_launches']/analysis['optimized']['kernel_launches']:.2f}x"
     )
-    print(f"  Theoretical speedup:    {analysis['speedup']['theoretical']:.2f}x")
+
     print(f"  Actual speedup:         {analysis['speedup']['actual']:.2f}x")
-    print(f"  Efficiency:             {analysis['speedup']['efficiency_pct']:.1f}%")
+
+    # Check if using roofline model
+    if "baseline_bottleneck" in analysis["speedup"]:
+        # Roofline-based efficiency analysis
+        print(f"\nRoofline Analysis:")
+        print(
+            f"  Baseline arithmetic intensity:  {analysis['speedup']['baseline_arithmetic_intensity']:.3f} FLOPs/byte"
+        )
+        print(
+            f"  Baseline bottleneck:            {analysis['speedup']['baseline_bottleneck']}"
+        )
+
+        # Show efficiency and cache benefit for baseline
+        print(
+            f"  Baseline efficiency:            {analysis['speedup']['baseline_efficiency_pct']:.1f}%"
+        )
+        baseline_cache = analysis['speedup'].get('baseline_cache_detected', False)
+        if baseline_cache:
+            baseline_benefit = analysis['speedup']['baseline_cache_benefit']
+            print(
+                f"  Baseline cache benefit:         {baseline_benefit:.2f}x ✓ (faster than theory predicts)"
+            )
+
+        print(
+            f"  Optimized arithmetic intensity: {analysis['speedup']['optimized_arithmetic_intensity']:.3f} FLOPs/byte"
+        )
+        print(
+            f"  Optimized bottleneck:           {analysis['speedup']['optimized_bottleneck']}"
+        )
+        print(
+            f"  Optimized efficiency:           {analysis['speedup']['optimized_efficiency_pct']:.1f}%"
+        )
+
+        # Show cache benefit for optimized
+        optimized_cache = analysis['speedup'].get('optimized_cache_detected', False)
+        if optimized_cache:
+            optimized_benefit = analysis['speedup']['optimized_cache_benefit']
+            print(
+                f"  Optimized cache benefit:        {optimized_benefit:.2f}x ✓ (faster than theory predicts)"
+            )
+
+        # Show explanation if cache detected
+        if baseline_cache or optimized_cache:
+            print(f"\n  ⚠️  Cache effects detected - kernel benefits from L2 cache (GOOD!)")
+            print(f"      Cache benefit >1.0x means actual performance exceeds theoretical prediction")
+            print(f"      This indicates excellent data locality and cache utilization")
 
 
 def profile_with_pytorch_profiler(

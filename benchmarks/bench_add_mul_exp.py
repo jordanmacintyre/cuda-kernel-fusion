@@ -16,6 +16,7 @@ from utils.analysis import analyze_numerical_accuracy
 from utils.performance import (
     analyze_memory_traffic,
     compare_implementations,
+    measure_gpu_specs,
     print_memory_analysis,
     profile_with_pytorch_profiler,
 )
@@ -63,13 +64,15 @@ def main():
     benchmark_iterations = 100
     profiler_iterations = 10
 
-    # Memory operation counts (for theoretical speedup analysis)
+    # Memory operation counts and FLOPs for roofline analysis
     # PyTorch: add(x, y) -> mul(a, 2) -> exp(b)
     #   Reads: x, y, a, b (4 reads from DRAM)
     #   Writes: a, b, result (3 writes to DRAM)
+    #   FLOPs: 3 ops per element (add, mul, exp) = 3N
     # CUDA: All operations fused, intermediates stay in registers
     #   Reads: x, y (2 reads from DRAM)
     #   Writes: result (1 write to DRAM)
+    #   FLOPs: 3 ops per element (add, mul, exp) = 3N
     memory_config = {
         "baseline_reads": 4,
         "baseline_writes": 3,
@@ -77,7 +80,15 @@ def main():
         "optimized_reads": 2,
         "optimized_writes": 1,
         "optimized_kernel_launches": 1,
+        "baseline_flops": 3 * size,  # add + mul + exp
+        "optimized_flops": 3 * size,  # add + mul + exp
     }
+
+    # ========================================================================
+    # MEASURE GPU SPECS
+    # ========================================================================
+    # Measure actual achievable bandwidth instead of using theoretical specs
+    gpu_specs = measure_gpu_specs(verbose=True)
 
     # ========================================================================
     # SETUP
@@ -135,6 +146,7 @@ def main():
         tensor_size=size,
         baseline_time_ms=baseline_result.mean_time_ms,
         optimized_time_ms=optimized_result.mean_time_ms,
+        gpu_specs=gpu_specs,
         **memory_config,
     )
     print_memory_analysis(memory_stats)

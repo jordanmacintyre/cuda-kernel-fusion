@@ -16,6 +16,7 @@ from utils.analysis import analyze_numerical_accuracy
 from utils.performance import (
     analyze_memory_traffic,
     compare_implementations,
+    measure_gpu_specs,
     print_memory_analysis,
     profile_with_pytorch_profiler,
 )
@@ -63,13 +64,15 @@ def main():
     benchmark_iterations = 100
     profiler_iterations = 10
 
-    # Memory operation counts (for theoretical speedup analysis)
-    # PyTorch: div(x, scale) -> mul(a, scale) -> add(b, zp) -> clamp(c, -128, 127) -> to_int8(d)
+    # Memory operation counts and FLOPs for roofline analysis
+    # PyTorch: div(x, scale) -> add(a, zp) -> round(b) -> clamp(c, -128, 127) -> to_int8(d)
     #   Reads: x, a, b, c, d (5 reads from DRAM)
     #   Writes: a, b, c, d, result (5 writes to DRAM)
+    #   FLOPs: 4 ops per element (div, add, round, clamp) = 4N
     # CUDA: All operations fused, intermediates stay in registers
     #   Reads: x (1 read from DRAM)
     #   Writes: result (1 write to DRAM)
+    #   FLOPs: 4 ops per element (div, add, round, clamp) = 4N
     memory_config = {
         "baseline_reads": 5,
         "baseline_writes": 5,
@@ -77,7 +80,15 @@ def main():
         "optimized_reads": 1,
         "optimized_writes": 1,
         "optimized_kernel_launches": 1,
+        "baseline_flops": 4 * size,  # div + add + round + clamp
+        "optimized_flops": 4 * size,  # div + add + round + clamp
     }
+
+    # ========================================================================
+    # MEASURE GPU SPECS
+    # ========================================================================
+    # Measure actual achievable bandwidth instead of using theoretical specs
+    gpu_specs = measure_gpu_specs(verbose=True)
 
     # ========================================================================
     # SETUP
@@ -133,6 +144,7 @@ def main():
         tensor_size=size,
         baseline_time_ms=baseline_result.mean_time_ms,
         optimized_time_ms=optimized_result.mean_time_ms,
+        gpu_specs=gpu_specs,
         **memory_config,
     )
     print_memory_analysis(memory_stats)
