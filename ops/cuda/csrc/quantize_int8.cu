@@ -29,22 +29,41 @@ __global__ void quantize_int8_kernel(
     /*
      * THREAD INDEXING - Calculate which element this thread processes
      *
-     * blockIdx.x  = Which block this thread is in (e.g., 0, 1, 2, ...)
-     * blockDim.x  = Number of threads per block (e.g., 256)
-     * threadIdx.x = Thread position within its block (e.g., 0-255)
+     * Each thread processes 4 elements for optimal memory coalescing
+     * At 50M elements, this kernel is MEMORY-BOUND, not compute-bound
      */
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idx = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
 
-    /*
-     * BOUNDS CHECK - Make sure we don't go past the array end
-     */
-    if (idx < size) {
-        float a = x[idx] / scale;      // Divide (in register)
-        float b = a + zero_point;      // Add (in register)
-        int c = __float2int_rn(b);     // Round (in register)
-        int d = max(-128, min(127, c));// Clamp (in register)
-        output[idx] = (int8_t)d;       // Typecast and write to memory
+    // Reciprocal scale for faster multiply instead of divide
+    const float inv_scale = 1.0f / scale;
+
+    // Inline quantization - clamp to int8 range [-128, 127]
+    #define QUANTIZE(val) \
+        (int8_t)max(-128, min(127, __float2int_rn(val * inv_scale + zero_point)))
+
+    // Process 4 elements if they all fit in bounds
+    if (idx + 3 < size) {
+        // Vectorized load: 16 bytes (4 floats) in single transaction
+        float4 data = reinterpret_cast<const float4*>(x)[idx / 4];
+
+        // Process 4 elements
+        char4 result;
+        result.x = QUANTIZE(data.x);
+        result.y = QUANTIZE(data.y);
+        result.z = QUANTIZE(data.z);
+        result.w = QUANTIZE(data.w);
+
+        // Vectorized store: 4 bytes in single transaction
+        reinterpret_cast<char4*>(output)[idx / 4] = result;
     }
+    // Handle tail elements (when size is not multiple of 4)
+    else if (idx < size) {
+        for (int i = idx; i < size && i < idx + 4; i++) {
+            output[i] = QUANTIZE(x[i]);
+        }
+    }
+
+    #undef QUANTIZE
 }
 
 /*
@@ -77,23 +96,18 @@ torch::Tensor quantize_int8_cuda(
      */
     auto output = torch::empty(x.sizes(), torch::TensorOptions().dtype(torch::kInt8).device(x.device()));
     
-    /*
-     * GET TOTAL NUMBER OF ELEMENTS
-     * For a tensor of shape [1000, 500], numel() returns 500,000
-     */
     int size = x.numel();
-    
+
     /*
-     * CONFIGURE KERNEL LAUNCH - How many threads to use?
-     * 
-     * Why 256? Common choices: 128, 256, 512, 1024
-     * - Must be multiple of 32 (GPU "warp" size)
-     * - 256 is a good balance for most problems
-     * - Too few: GPU not fully utilized
-     * - Too many: Not enough registers per thread
+     * CONFIGURE KERNEL LAUNCH
+     *
+     * Each thread processes 4 elements (vectorized with float4/char4)
+     * 256 threads/block = 8 warps, good occupancy
      */
-    const int threads = 256;  // Threads per block
-    const int blocks = (size + threads - 1) / threads;  // Ceiling division
+    const int threads = 256;
+    const int elements_per_thread = 4;
+    const int total_threads_needed = (size + elements_per_thread - 1) / elements_per_thread;
+    const int blocks = (total_threads_needed + threads - 1) / threads;
     
     /*
      * LAUNCH THE KERNEL
