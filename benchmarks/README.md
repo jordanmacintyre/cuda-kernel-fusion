@@ -294,8 +294,8 @@ Use PyTorch profiler to understand kernel-level behavior:
 
 - [bench_add_mul_exp.py](bench_add_mul_exp.py) - Element-wise fusion: `exp((x + y) * 2)`
   - Demonstrates kernel fusion reducing 3 PyTorch operations to 1 CUDA kernel
-  - **L2 Cache**: 1.9x speedup over raw PyTorch (1M elements), 1.7x vs torch.compile
-  - **VRAM**: 2.4x speedup over raw PyTorch (50M elements), 1.03x vs torch.compile
+  - **L2 Cache**: 1.84x speedup over raw PyTorch (1M elements), 1.71x vs torch.compile
+  - **VRAM**: 2.32x speedup over raw PyTorch (20M elements), 1.06x vs torch.compile
   - High numerical accuracy (< 1e-6 relative error)
 
 - [bench_quantize_int8.py](bench_quantize_int8.py) - INT8 quantization

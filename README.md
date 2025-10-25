@@ -60,8 +60,8 @@ Fuses `clamp(round(x / scale + zero_point), -128, 127).to(int8)` into a single k
 Fuses `exp((x + y) * 2)` into a single kernel.
 - **PyTorch**: 3 separate kernels, 7 memory operations
 - **Custom CUDA**: 1 fused kernel, 3 memory operations
-- **Speedup vs raw PyTorch**: 2.4x (50M elements), 1.9x (1M elements)
-- **Speedup vs torch.compile**: 1.1x (10M elements), 1.7x (1M elements)
+- **Speedup vs raw PyTorch**: 2.32x (20M elements), 1.84x (1M elements)
+- **Speedup vs torch.compile**: 1.06x (20M elements), 1.71x (1M elements)
 
 ## Usage
 
@@ -129,22 +129,28 @@ RAW EXECUTION TIME
 Memory Location    Data Size      # Elements            PyTorch      torch.compile        Custom CUDA
                         (MB)                               (ms)               (ms)               (ms)
 --------------------------------------------------------------------------------------------------------------
-L2 Cache               5.7         500,000         0.036 ± 0.002        0.051 ± 0.002        0.024 ± 0.001
-L2 Cache              11.4       1,000,000         0.083 ± 0.024        0.074 ± 0.003        0.043 ± 0.001
-VRAM                  57.2       5,000,000         0.355 ± 0.010        0.190 ± 0.005        0.158 ± 0.005
-VRAM                 114.4      10,000,000         0.691 ± 0.019        0.334 ± 0.010        0.300 ± 0.007
-VRAM                 572.2      50,000,000         3.387 ± 0.041        1.484 ± 0.027        1.441 ± 0.026
+L2 Cache               1.1         100,000         0.029 ± 0.003        0.047 ± 0.003        0.012 ± 0.001
+L2 Cache               3.4         300,000         0.037 ± 0.002        0.063 ± 0.003        0.020 ± 0.001
+VRAM                  11.4       1,000,000         0.080 ± 0.002        0.074 ± 0.002        0.043 ± 0.002
+VRAM                  57.2       5,000,000         0.355 ± 0.011        0.191 ± 0.005        0.158 ± 0.004
+VRAM                 228.9      20,000,000         1.365 ± 0.026        0.622 ± 0.015        0.589 ± 0.039
 
 RELATIVE SPEEDUP
 Memory Location    Data Size   compile/PyTorch       CUDA/PyTorch       CUDA/compile
                         (MB)         (speedup)          (speedup)          (speedup)
 --------------------------------------------------------------------------------------------------------------
-L2 Cache               5.7        0.70 ± 0.04x        1.50 ± 0.09x        2.13 ± 0.12x
-L2 Cache              11.4        1.12 ± 0.33x        1.93 ± 0.57x        1.73 ± 0.08x
-VRAM                  57.2        1.87 ± 0.07x        2.25 ± 0.09x        1.21 ± 0.05x
-VRAM                 114.4        2.07 ± 0.08x        2.31 ± 0.09x        1.12 ± 0.04x
-VRAM                 572.2        2.28 ± 0.05x        2.35 ± 0.05x        1.03 ± 0.03x
+L2 Cache               1.1        0.62 ± 0.07x        2.37 ± 0.36x        3.83 ± 0.53x
+L2 Cache               3.4        0.60 ± 0.05x        1.87 ± 0.18x        3.15 ± 0.27x
+VRAM                  11.4        1.08 ± 0.05x        1.84 ± 0.10x        1.71 ± 0.09x
+VRAM                  57.2        1.86 ± 0.08x        2.25 ± 0.09x        1.21 ± 0.05x
+VRAM                 228.9        2.19 ± 0.07x        2.32 ± 0.16x        1.06 ± 0.07x
 ```
+
+**Key insights:**
+- **torch.compile overhead at small sizes**: torch.compile is slower than raw PyTorch at 100K-300K elements due to graph execution overhead
+- **Custom CUDA dominates small sizes**: 2.4-3.8x faster than torch.compile when data fits in L2 cache (100K-300K elements)
+- **Performance converges at large sizes**: At 20M elements, Custom CUDA is only 1.06x faster than torch.compile - both are memory-bandwidth-limited
+- **Custom CUDA consistently wins**: 1.84-2.32x faster than raw PyTorch across all sizes
 
 **Why is it faster?**
 

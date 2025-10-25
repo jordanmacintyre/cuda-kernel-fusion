@@ -204,11 +204,11 @@ def main():
     # Test multiple scenarios across L2 cache and VRAM
     # Note: For add_mul_exp, data size = 3x elements (2 inputs + 1 output)
     scenarios = [
-        (500_000, "L2 Cache"),
-        (1_000_000, "L2 Cache"),
+        (100_000, "L2 Cache"),
+        (300_000, "L2 Cache"),
+        (1_000_000, "VRAM"),
         (5_000_000, "VRAM"),
-        (10_000_000, "VRAM"),
-        (50_000_000, "VRAM"),
+        (20_000_000, "VRAM"),
     ]
 
     results = []

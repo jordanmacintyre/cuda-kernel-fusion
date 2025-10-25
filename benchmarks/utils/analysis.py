@@ -145,7 +145,9 @@ def analyze_numerical_accuracy(
     else:
         # Only do the 1e-5 check (most commonly used threshold)
         # Use max errors instead of torch.allclose to avoid creating intermediate tensors
-        passes_1e5 = (max_abs_diff <= 1e-8) and (max_rel_diff <= 1e-5)
+        # Only check relative error - absolute error is not meaningful for operations
+        # with varying output magnitudes (e.g., exp, large intermediate values)
+        passes_1e5 = max_rel_diff <= 1e-5
         passes[1e-3] = passes_1e5  # If passes 1e-5, definitely passes 1e-3
         passes[1e-4] = passes_1e5  # If passes 1e-5, definitely passes 1e-4
         passes[1e-5] = passes_1e5  # Main check
