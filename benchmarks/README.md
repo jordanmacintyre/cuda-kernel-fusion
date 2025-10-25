@@ -23,49 +23,53 @@ python benchmarks/bench_add_mul_exp.py
 python benchmarks/bench_quantize_int8.py
 ```
 
+Each benchmark tests **three implementations** (PyTorch, torch.compile, Custom CUDA) across **five data sizes** to analyze cache effects and memory bandwidth limits.
+
 **Sample output:**
 ```
-======================================================================
-TIMING RESULTS
-======================================================================
+==============================================================================================================================
+PERFORMANCE SUMMARY
+==============================================================================================================================
 
-PyTorch:
-  Mean:   0.690 ± 0.020 ms
-  Median: 0.687 ms
-  Range:  [0.681, 0.788] ms
+RAW EXECUTION TIME
+Memory Location       Data Size      # Elements            PyTorch      torch.compile        Custom CUDA
+                           (MB)                               (ms)               (ms)               (ms)
+------------------------------------------------------------------------------------------------------------------------------
+L2 Cache                    1.9         500,000      0.048 ± 0.002      0.045 ± 0.002      0.011 ± 0.006
+L2 Cache                    3.8       1,000,000      0.103 ± 0.006      0.056 ± 0.002      0.024 ± 0.003
+VRAM                       19.1       5,000,000      0.470 ± 0.014      0.101 ± 0.002      0.071 ± 0.002
+VRAM                       38.1      10,000,000      0.914 ± 0.021      0.160 ± 0.004      0.130 ± 0.004
+VRAM                      190.7      50,000,000      4.472 ± 0.045      0.629 ± 0.014      0.599 ± 0.016
 
-CUDA:
-  Mean:   0.297 ± 0.010 ms
-  Median: 0.295 ms
-  Range:  [0.291, 0.361] ms
+RELATIVE SPEEDUP
+Memory Location       Data Size        compile/PyTorch           CUDA/PyTorch           CUDA/compile
+                           (MB)              (speedup)              (speedup)              (speedup)
+------------------------------------------------------------------------------------------------------------------------------
+L2 Cache                    1.9          1.05 ± 0.05 x          4.17 ± 2.21 x          3.98 ± 2.10 x
+L2 Cache                    3.8          1.84 ± 0.12 x          4.37 ± 0.64 x          2.38 ± 0.33 x
+VRAM                       19.1          4.65 ± 0.17 x          6.62 ± 0.27 x          1.43 ± 0.05 x
+VRAM                       38.1          5.73 ± 0.19 x          7.05 ± 0.26 x          1.23 ± 0.05 x
+VRAM                      190.7          7.11 ± 0.17 x          7.47 ± 0.21 x          1.05 ± 0.04 x
 
-  Speedup: 2.32x
-
-======================================================================
-MEMORY TRAFFIC ANALYSIS
-======================================================================
-Speedup Analysis:
-  Memory reduction:       2.33x
-  Kernel reduction:       3/1 = 3.00x
-  Actual speedup:         2.32x
-
-Roofline Analysis:
-  Baseline arithmetic intensity:  0.107 FLOPs/byte
-  Baseline bottleneck:            memory
-  Baseline efficiency:            98.0%
-  Optimized arithmetic intensity: 0.250 FLOPs/byte
-  Optimized bottleneck:           memory
-  Optimized efficiency:           97.5%
-
-======================================================================
-NUMERICAL ACCURACY ANALYSIS
-======================================================================
-Relative Differences:
-  Max:    8.861581e-07
-
-Passes torch.allclose():
-  rtol=1e-5: ✓
+==============================================================================================================================
+Numerical Accuracy: PASS - All implementations match
+==============================================================================================================================
 ```
+
+**What the benchmark shows:**
+- **L2 Cache data (2-4 MB)**: Custom CUDA is 4.2-4.4x faster than raw PyTorch - shows register and cache efficiency
+- **Small VRAM data (19-38 MB)**: Both optimizations excel, 6-7x speedup over raw PyTorch
+- **Large VRAM data (190 MB)**: Memory bandwidth limited - both hit the same 7.5x ceiling (1.05x difference)
+
+**Test scenarios:**
+- **L2 Cache (500K-1M elements)**: Fits in GPU L2 cache (~4 MB), tests register efficiency and cache utilization
+- **VRAM (5M-50M elements)**: Exceeds L2 cache, tests memory bandwidth optimization and kernel fusion benefits
+
+**Understanding the output:**
+- **Raw execution time**: Mean ± standard deviation (ms) from 100 iterations
+- **Relative speedup**: Calculated speedup with error propagation: σ = (A/B) × √[(σ_A/A)² + (σ_B/B)²]
+- **Memory Location**: Whether data fits in L2 Cache or requires VRAM access
+- **Data Size (MB)**: Calculated memory per tensor (float32 = 4 bytes/element)
 
 ## Creating a New Benchmark
 
@@ -88,46 +92,7 @@ def cuda_optimized(x, y):
     return your_op(x, y)
 ```
 
-### 3. Update Memory Operation Counts
-
-Count the number of tensor reads/writes for accurate bandwidth analysis. For each PyTorch operation, count how many times tensors are read from or written to global memory:
-
-```python
-# Basic memory analysis (without roofline)
-memory_stats = analyze_memory_traffic(
-    tensor_size=size,
-    baseline_reads=3,   # PyTorch: count all tensor reads across all ops
-    baseline_writes=2,  # PyTorch: count all tensor writes across all ops
-    optimized_reads=2,  # CUDA: read x, y only
-    optimized_writes=1, # CUDA: write output only
-    baseline_time_ms=baseline_result.mean_time_ms,
-    optimized_time_ms=optimized_result.mean_time_ms,
-)
-
-# Advanced analysis with roofline model (recommended)
-memory_stats = analyze_memory_traffic(
-    tensor_size=size,
-    baseline_reads=3,
-    baseline_writes=2,
-    optimized_reads=2,
-    optimized_writes=1,
-    baseline_time_ms=baseline_result.mean_time_ms,
-    optimized_time_ms=optimized_result.mean_time_ms,
-    # Roofline model parameters (optional but recommended)
-    baseline_flops=size * 3,      # Total FLOPs for baseline
-    optimized_flops=size * 3,     # Total FLOPs for optimized
-    gpu_specs={
-        'peak_bandwidth': 414e9,   # Measured GPU bandwidth (GB/s)
-        'peak_flops': 20.3e12,     # GPU peak FLOPs (FLOPS)
-    }
-)
-```
-
-**Example:** For `clamp(round(x / scale + zero_point), -128, 127)`:
-- PyTorch: 5 ops → 5 reads + 5 writes = 10 memory operations
-- CUDA: 1 op → 1 read + 1 write = 2 memory operations
-
-### 4. Run Your Benchmark
+### 3. Run Your Benchmark
 
 ```bash
 python benchmarks/bench_your_op.py
@@ -135,116 +100,69 @@ python benchmarks/bench_your_op.py
 
 ## Using the Benchmarking Utilities
 
-### Simple Comparison
+### Three-Way Comparison
+
+The benchmarks compare PyTorch, torch.compile, and custom CUDA across multiple data sizes:
 
 ```python
-from utils import compare_implementations
+from utils import compare_three_implementations
 
-baseline_result, optimized_result = compare_implementations(
+pytorch_result, compiled_result, cuda_result = compare_three_implementations(
     baseline_func=pytorch_impl,
+    compiled_func=torch.compile(pytorch_impl),
     optimized_func=cuda_impl,
     args=(x, y),
     baseline_name="PyTorch",
-    optimized_name="CUDA",
+    compiled_name="torch.compile",
+    optimized_name="Custom CUDA",
+    warmup=10,
     iterations=100
 )
 
-print(f"Speedup: {baseline_result.mean_time_ms / optimized_result.mean_time_ms:.2f}x")
+# Extract timing for summary
+pytorch_time = pytorch_result.mean_time_ms
+compiled_time = compiled_result.mean_time_ms
+cuda_time = cuda_result.mean_time_ms
+
+print(f"Speedup (CUDA vs PyTorch): {pytorch_time / cuda_time:.2f}x")
+print(f"Speedup (CUDA vs compile): {compiled_time / cuda_time:.2f}x")
 ```
 
 ### Numerical Accuracy
 
+The benchmarks automatically check numerical accuracy between all implementations:
+
 ```python
 from utils import analyze_numerical_accuracy
 
+# Compare PyTorch vs Custom CUDA
 metrics = analyze_numerical_accuracy(
-    baseline=pytorch_result,
-    optimized=cuda_result,
-    verbose=True
+    baseline=pytorch_result.result,
+    optimized=cuda_result.result,
+    verbose=False  # Set True for detailed output
 )
 
+print(f"Max absolute error: {metrics.max_abs_diff:.2e}")
 print(f"Max relative error: {metrics.max_rel_diff:.2e}")
-print(f"Passes 1e-5: {metrics.passes_1e5}")
+print(f"Passes 1e-5 tolerance: {metrics.passes_1e5}")
 ```
 
-### Quick Accuracy Check
+**Memory-efficient design:**
+- Only computes max and mean errors (not median/std) to save memory
+- Skips NaN/Inf checks for large tensors (200M elements)
+- Uses scalar comparisons instead of `torch.allclose()` to avoid OOM
+- Suitable for benchmarking 200M+ element tensors on 8GB GPUs
 
-```python
-from utils import compare_accuracy_quick
+### Advanced Analysis (Optional)
 
-passes, abs_err, rel_err = compare_accuracy_quick(
-    baseline=pytorch_result,
-    optimized=cuda_result,
-    rtol=1e-5
-)
+The benchmarking utilities also support detailed memory traffic and roofline analysis, though these are not included in the default benchmark output. These are useful for deep performance investigation:
 
-if not passes:
-    print(f"Failed! Max abs error: {abs_err:.2e}, rel error: {rel_err:.2e}")
-```
+**Available advanced utilities:**
+- `analyze_memory_traffic()` - Calculate bandwidth, memory reduction, and roofline efficiency
+- `measure_gpu_specs()` - Measure actual GPU bandwidth and peak FLOPs
+- `roofline_efficiency()` - Determine if kernel is compute-bound or memory-bound
 
-### Memory Traffic Analysis
-
-```python
-from utils import analyze_memory_traffic, print_memory_analysis
-
-stats = analyze_memory_traffic(
-    tensor_size=10_000_000,
-    baseline_reads=4,
-    baseline_writes=3,
-    optimized_reads=2,
-    optimized_writes=1,
-    baseline_time_ms=0.686,
-    optimized_time_ms=0.297
-)
-
-print_memory_analysis(stats)
-```
-
-Output (with roofline model):
-```
-Memory Traffic Analysis:
-  Baseline:
-    Memory operations: 7 (4 reads + 3 writes)
-    Total traffic:     267.03 MB
-    Bandwidth:         378.81 GB/s
-
-  Optimized:
-    Memory operations: 3 (2 reads + 1 writes)
-    Total traffic:     114.44 MB
-    Bandwidth:         399.72 GB/s
-
-  Speedup Analysis:
-    Memory reduction:       2.33x
-    Kernel reduction:       3/1 = 3.00x
-    Actual speedup:         2.32x
-
-  Roofline Analysis:
-    Baseline arithmetic intensity:  0.107 FLOPs/byte
-    Baseline bottleneck:            memory
-    Baseline efficiency:            98.0%
-    Optimized arithmetic intensity: 0.250 FLOPs/byte
-    Optimized bottleneck:           memory
-    Optimized efficiency:           97.5%
-```
-
-### GPU Specifications for Roofline
-
-Measure your GPU's actual bandwidth and peak FLOPs:
-
-```python
-from utils import measure_gpu_specs
-
-gpu_specs = measure_gpu_specs(
-    size_mb=1000,      # Test with 1GB of data
-    num_iterations=100,
-    verbose=True
-)
-
-print(f"Peak bandwidth: {gpu_specs['peak_bandwidth']/1e9:.1f} GB/s")
-print(f"Peak FLOPs: {gpu_specs['peak_flops']/1e12:.1f} TFLOPS")
-```
-
-**Note**: This measures **copy bandwidth**, not compute bandwidth. For production analysis, consider using compute-based measurements (FMA operations).
+See the utility functions reference below for details on these advanced features.
 
 ### PyTorch Profiler
 
@@ -264,7 +182,7 @@ profile_with_pytorch_profiler([
 | Function | Description | Returns |
 |----------|-------------|---------|
 | `benchmark_function()` | Benchmark single function with warmup | `BenchmarkResult` with timing stats |
-| `compare_implementations()` | Compare baseline vs optimized | Tuple of two `BenchmarkResult`s |
+| `compare_three_implementations()` | Compare PyTorch, torch.compile, and custom CUDA | Tuple of three `BenchmarkResult`s |
 | `measure_gpu_specs()` | Measure actual GPU bandwidth and estimate peak FLOPs | Dict with `peak_bandwidth`, `peak_flops` |
 | `roofline_efficiency()` | Calculate roofline model efficiency | `(efficiency, bottleneck, cache_benefit)` tuple |
 | `analyze_memory_traffic()` | Calculate bandwidth, efficiency, roofline metrics | Dict with memory analysis |
@@ -275,9 +193,12 @@ profile_with_pytorch_profiler([
 
 | Function | Description | Returns |
 |----------|-------------|---------|
-| `analyze_numerical_accuracy()` | Comprehensive accuracy analysis | `AccuracyMetrics` object |
-| `compare_accuracy_quick()` | Quick pass/fail accuracy check | `(passes, max_abs_err, max_rel_err)` |
-| `assert_accuracy()` | Assert accuracy or raise error | None (raises on failure) |
+| `analyze_numerical_accuracy()` | Memory-efficient accuracy analysis | `AccuracyMetrics` object |
+
+**Note:** The analysis utilities have been optimized for memory efficiency to handle 200M+ element tensors on 8GB GPUs. This includes:
+- Simplified metrics (max/mean only, no median/std)
+- Skipped special value checks (NaN/Inf)
+- Scalar-based tolerance checks (no intermediate tensors)
 
 See the source files for detailed parameter documentation.
 
@@ -300,18 +221,18 @@ The roofline model determines if your kernel is **compute-bound** or **memory-bo
 
 ### Cache Benefit
 
-When a kernel runs **faster than theoretical predictions** based on DRAM bandwidth alone, it indicates **L2 cache benefits**:
+When a kernel runs **faster than theoretical predictions** based on VRAM bandwidth alone, it indicates **L2 cache benefits**:
 
-- **Cache benefit = 1.0x**: Performance matches DRAM-only theory
+- **Cache benefit = 1.0x**: Performance matches VRAM-only theory
 - **Cache benefit > 1.0x**: L2 cache is helping! (GOOD)
 - **Example**: 1.51x cache benefit means the kernel is 51% faster than theory predicts
 
 This happens when:
-- Data fits in L2 cache (6MB on RTX 3070)
+- Data fits in L2 cache (~4MB on RTX 3070)
 - Good temporal locality (reusing data)
 - Effective spatial locality (coalesced access)
 
-**Why report separately?** Efficiency is capped at 100% (can't exceed theoretical maximum), but cache benefit shows how much faster you are than the simple DRAM-only model.
+**Why report separately?** Efficiency is capped at 100% (can't exceed theoretical maximum), but cache benefit shows how much faster you are than the simple VRAM-only model.
 
 ## Best Practices
 
@@ -334,26 +255,7 @@ accuracy_metrics = analyze_numerical_accuracy(
 - `rtol=1e-7` for float64
 - Adjust based on your operation's numerical sensitivity
 
-### 3. Understanding Memory Operations
-
-Count only **global memory** accesses (reads from/writes to DRAM):
-- **Reads**: Tensor loaded from global memory
-- **Writes**: Tensor stored to global memory
-- **Don't count**: Register operations, L1/L2 cache hits, shared memory
-
-**Example:** `exp((x + y) * 2)`
-
-PyTorch (3 separate kernels):
-1. `a = x + y`: read x, y → write a (2 reads, 1 write)
-2. `b = a * 2`: read a → write b (1 read, 1 write)
-3. `c = exp(b)`: read b → write c (1 read, 1 write)
-- **Total: 4 reads + 3 writes = 7 operations**
-
-CUDA (1 fused kernel):
-- Read x, y → compute in registers → write c
-- **Total: 2 reads + 1 write = 3 operations**
-
-### 4. Use Sufficient Warmup
+### 3. Use Sufficient Warmup
 
 - Default `warmup=10` is usually sufficient
 - Increase for:
@@ -361,7 +263,7 @@ CUDA (1 fused kernel):
   - Unstable timing results
   - Very fast operations (< 0.1ms)
 
-### 5. Profile for Details
+### 4. Profile for Details
 
 Use PyTorch profiler to understand kernel-level behavior:
 - Kernel launch overhead
@@ -383,19 +285,21 @@ Use PyTorch profiler to understand kernel-level behavior:
 - Check for NaN/Inf propagation
 
 **Low speedup:**
-- Verify memory operation counts
-- Check kernel isn't limited by other factors (divergence, atomics)
 - Profile to identify bottlenecks
+- Check kernel isn't limited by other factors (divergence, atomics)
 - Ensure data is actually on GPU
+- Compare across different data sizes (L2 Cache vs VRAM)
 
 ## Example Benchmarks
 
 - [bench_add_mul_exp.py](bench_add_mul_exp.py) - Element-wise fusion: `exp((x + y) * 2)`
-  - Demonstrates reducing 3 kernels to 1
-  - Shows 2.32x speedup with 98% roofline efficiency
+  - Demonstrates kernel fusion reducing 3 PyTorch operations to 1 CUDA kernel
+  - **L2 Cache**: 1.9x speedup over raw PyTorch (1M elements), 1.7x vs torch.compile
+  - **VRAM**: 2.4x speedup over raw PyTorch (50M elements), 1.03x vs torch.compile
   - High numerical accuracy (< 1e-6 relative error)
 
 - [bench_quantize_int8.py](bench_quantize_int8.py) - INT8 quantization
-  - Demonstrates reducing 5 kernels to 1
-  - Shows 7.14x speedup with 100% roofline efficiency + 1.51x cache benefit
+  - Demonstrates kernel fusion reducing 5 PyTorch operations to 1 CUDA kernel
+  - **L2 Cache**: 4.4x speedup over raw PyTorch (1M elements), 2.4x vs torch.compile
+  - **VRAM**: 7.5x speedup over raw PyTorch (50M elements), 1.05x vs torch.compile
   - Exact integer matching (zero error)

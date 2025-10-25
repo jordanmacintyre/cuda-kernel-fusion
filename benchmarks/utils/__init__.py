@@ -2,32 +2,29 @@
 Benchmarking utilities for CUDA kernel fusion.
 """
 
+from .analysis import AccuracyMetrics, analyze_numerical_accuracy
 from .performance import (
-    benchmark_function,
-    compare_implementations,
     BenchmarkResult,
     analyze_memory_traffic,
+    benchmark_function,
+    compare_three_implementations,
+    measure_gpu_specs,
     print_memory_analysis,
     profile_with_pytorch_profiler,
-)
-from .analysis import (
-    analyze_numerical_accuracy,
-    AccuracyMetrics,
-    compare_accuracy_quick,
-    assert_accuracy,
+    roofline_efficiency,
 )
 
 __all__ = [
     # Performance
-    "benchmark_function",
-    "compare_implementations",
     "BenchmarkResult",
+    "benchmark_function",
+    "compare_three_implementations",
+    "measure_gpu_specs",
+    "roofline_efficiency",
     "analyze_memory_traffic",
     "print_memory_analysis",
     "profile_with_pytorch_profiler",
     # Analysis
-    "analyze_numerical_accuracy",
     "AccuracyMetrics",
-    "compare_accuracy_quick",
-    "assert_accuracy",
+    "analyze_numerical_accuracy",
 ]

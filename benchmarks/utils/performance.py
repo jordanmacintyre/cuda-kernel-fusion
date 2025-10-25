@@ -86,7 +86,7 @@ def measure_gpu_specs(size_mb: int = 1000, num_iterations: int = 100, verbose: b
     measured_bandwidth = bytes_transferred / elapsed
 
     if verbose:
-        print(f"  ✓ Measured bandwidth: {measured_bandwidth/1e9:.1f} GB/s")
+        print(f"  [OK] Measured bandwidth: {measured_bandwidth/1e9:.1f} GB/s")
 
     # For FLOPs, use a simple estimation based on GPU architecture
     # This is a rough estimate - actual peak depends on specific operations
@@ -118,7 +118,7 @@ def measure_gpu_specs(size_mb: int = 1000, num_iterations: int = 100, verbose: b
             print(f"  ! Unknown GPU, using conservative FLOP estimate: {estimated_flops/1e12:.1f} TFLOPS")
     else:
         if verbose:
-            print(f"  ✓ Estimated peak FLOPs: {estimated_flops/1e12:.1f} TFLOPS")
+            print(f"  [OK] Estimated peak FLOPs: {estimated_flops/1e12:.1f} TFLOPS")
 
     return {
         'peak_bandwidth': measured_bandwidth,
@@ -196,42 +196,37 @@ def benchmark_function(
     )
 
 
-def compare_implementations(
+
+
+def compare_three_implementations(
     baseline_func: Callable,
+    compiled_func: Callable,
     optimized_func: Callable,
     args: Tuple,
-    baseline_name: str = "Baseline",
-    optimized_name: str = "Optimized",
+    baseline_name: str = "PyTorch",
+    compiled_name: str = "torch.compile",
+    optimized_name: str = "Custom CUDA",
     warmup: int = 10,
     iterations: int = 100,
     verbose: bool = True,
-) -> Tuple[BenchmarkResult, BenchmarkResult]:
+) -> Tuple[BenchmarkResult, BenchmarkResult, BenchmarkResult]:
     """
-    Compare two implementations and compute speedup.
+    Compare three implementations: baseline, compiled, and custom optimized.
 
     Args:
-        baseline_func: Baseline implementation (e.g., PyTorch)
-        optimized_func: Optimized implementation (e.g., custom CUDA)
-        args: Tuple of arguments to pass to both functions
+        baseline_func: Baseline implementation (e.g., raw PyTorch)
+        compiled_func: Compiled implementation (e.g., torch.compile)
+        optimized_func: Custom optimized implementation (e.g., custom CUDA)
+        args: Tuple of arguments to pass to all functions
         baseline_name: Name for baseline implementation
+        compiled_name: Name for compiled implementation
         optimized_name: Name for optimized implementation
         warmup: Number of warmup iterations
         iterations: Number of timing iterations
         verbose: Whether to show progress and results
 
     Returns:
-        Tuple of (baseline_result, optimized_result)
-
-    Example:
-        >>> def pytorch_impl(x, y):
-        ...     return torch.exp((x + y) * 2)
-        >>> def cuda_impl(x, y):
-        ...     return add_mul_exp(x, y)
-        >>> x = torch.randn(1000000, device='cuda')
-        >>> y = torch.randn(1000000, device='cuda')
-        >>> baseline, optimized = compare_implementations(
-        ...     pytorch_impl, cuda_impl, (x, y)
-        ... )
+        Tuple of (baseline_result, compiled_result, optimized_result)
     """
     if verbose:
         print(f"\n{'=' * 70}")
@@ -240,7 +235,7 @@ def compare_implementations(
 
     # Benchmark baseline
     if verbose:
-        print(f"\n[1/2] {baseline_name}")
+        print(f"\n[1/3] {baseline_name}")
     baseline_result = benchmark_function(
         baseline_func,
         args,
@@ -250,9 +245,21 @@ def compare_implementations(
         verbose=verbose,
     )
 
+    # Benchmark compiled
+    if verbose:
+        print(f"\n[2/3] {compiled_name}")
+    compiled_result = benchmark_function(
+        compiled_func,
+        args,
+        name=compiled_name,
+        warmup=warmup,
+        iterations=iterations,
+        verbose=verbose,
+    )
+
     # Benchmark optimized
     if verbose:
-        print(f"\n[2/2] {optimized_name}")
+        print(f"\n[3/3] {optimized_name}")
     optimized_result = benchmark_function(
         optimized_func,
         args,
@@ -269,12 +276,20 @@ def compare_implementations(
         print(f"{'=' * 70}\n")
         print(baseline_result)
         print()
+        print(compiled_result)
+        print()
         print(optimized_result)
 
-        speedup = baseline_result.mean_time_ms / optimized_result.mean_time_ms
-        print(f"\n  Speedup: {speedup:.2f}x")
+        print(f"\nSpeedup Comparison:")
+        compiled_vs_baseline = baseline_result.mean_time_ms / compiled_result.mean_time_ms
+        cuda_vs_baseline = baseline_result.mean_time_ms / optimized_result.mean_time_ms
+        cuda_vs_compiled = compiled_result.mean_time_ms / optimized_result.mean_time_ms
 
-    return baseline_result, optimized_result
+        print(f"  {compiled_name} vs {baseline_name}:  {compiled_vs_baseline:.2f}x")
+        print(f"  {optimized_name} vs {baseline_name}:     {cuda_vs_baseline:.2f}x")
+        print(f"  {optimized_name} vs {compiled_name}:    {cuda_vs_compiled:.2f}x")
+
+    return baseline_result, compiled_result, optimized_result
 
 
 def roofline_efficiency(kernel_stats: dict, gpu_specs: dict) -> tuple:
@@ -553,7 +568,7 @@ def print_memory_analysis(analysis: dict):
         if baseline_cache:
             baseline_benefit = analysis['speedup']['baseline_cache_benefit']
             print(
-                f"  Baseline cache benefit:         {baseline_benefit:.2f}x ✓ (faster than theory predicts)"
+                f"  Baseline cache benefit:         {baseline_benefit:.2f}x [OK] (faster than theory predicts)"
             )
 
         print(
@@ -571,12 +586,12 @@ def print_memory_analysis(analysis: dict):
         if optimized_cache:
             optimized_benefit = analysis['speedup']['optimized_cache_benefit']
             print(
-                f"  Optimized cache benefit:        {optimized_benefit:.2f}x ✓ (faster than theory predicts)"
+                f"  Optimized cache benefit:        {optimized_benefit:.2f}x [OK] (faster than theory predicts)"
             )
 
         # Show explanation if cache detected
         if baseline_cache or optimized_cache:
-            print(f"\n  ⚠️  Cache effects detected - kernel benefits from L2 cache (GOOD!)")
+            print(f"\n  [NOTE] Cache effects detected - kernel benefits from L2 cache (GOOD!)")
             print(f"      Cache benefit >1.0x means actual performance exceeds theoretical prediction")
             print(f"      This indicates excellent data locality and cache utilization")
 
@@ -591,12 +606,6 @@ def profile_with_pytorch_profiler(
     Args:
         funcs_and_names: List of (function, name, args) tuples to profile
         iterations: Number of iterations to profile
-
-    Example:
-        >>> profile_with_pytorch_profiler([
-        ...     (pytorch_impl, "PyTorch", (x, y)),
-        ...     (cuda_impl, "CUDA", (x, y))
-        ... ])
     """
     print(f"\n{'=' * 70}")
     print("PYTORCH PROFILER (Kernel-level timing)")

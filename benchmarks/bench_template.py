@@ -68,11 +68,11 @@ def main():
     # TODO: Count memory operations for your kernel
     # Example:
     #   PyTorch: operation1(x, y) -> operation2(a) -> operation3(b)
-    #     Reads: x, y, a, b (4 reads from DRAM)
-    #     Writes: a, b, result (3 writes to DRAM)
+    #     Reads: x, y, a, b (4 reads from VRAM)
+    #     Writes: a, b, result (3 writes to VRAM)
     #   CUDA: All operations fused, intermediates stay in registers
-    #     Reads: x, y (2 reads from DRAM)
-    #     Writes: result (1 write to DRAM)
+    #     Reads: x, y (2 reads from VRAM)
+    #     Writes: result (1 write to VRAM)
     memory_config = {
         "baseline_reads": 4,  # TODO: Count baseline reads
         "baseline_writes": 3,  # TODO: Count baseline writes
