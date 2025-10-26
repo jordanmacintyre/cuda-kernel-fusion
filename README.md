@@ -53,15 +53,15 @@ python benchmarks/bench_add_mul_exp.py
 Fuses `clamp(round(x / scale + zero_point), -128, 127).to(int8)` into a single kernel.
 - **PyTorch**: 5 separate kernels, 10 memory operations
 - **Custom CUDA**: 1 fused kernel, 2 memory operations
-- **Speedup vs raw PyTorch**: 7.5x (50M elements), 4.4x (1M elements)
-- **Speedup vs torch.compile**: 1.2x (10M elements), 2.4x (1M elements)
+- **Speedup vs raw PyTorch**: 7.5x (50M elements), 4.4x (500K elements)
+- **Speedup vs torch.compile**: 2.4x (1M elements), 1.05x (50M elements)
 
 ### 2. Element-wise Fusion: `add_mul_exp`
 Fuses `exp((x + y) * 2)` into a single kernel.
 - **PyTorch**: 3 separate kernels, 7 memory operations
 - **Custom CUDA**: 1 fused kernel, 3 memory operations
-- **Speedup vs raw PyTorch**: 2.32x (20M elements), 1.84x (1M elements)
-- **Speedup vs torch.compile**: 1.06x (20M elements), 1.71x (1M elements)
+- **Speedup vs raw PyTorch**: 2.37x (100K elements), 2.32x (20M elements)
+- **Speedup vs torch.compile**: 3.83x (100K elements), 1.06x (20M elements)
 
 ## Usage
 
